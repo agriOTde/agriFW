@@ -3,8 +3,8 @@
 
 // max min voltage for moisture
 //FIXME:
-#define MOISTMAX 4500 
-#define MOISTMIN 1500
+#define MOISTMAX 1410
+#define MOISTMIN 2840
 
 typedef enum {
 
@@ -18,7 +18,7 @@ class soilMoist
     public:
     soilMoist(uint8_t sensNum);
     uint32_t getVolt();
-    double soilMoisture();
+    double getPerc();
     double getprevMoistPerc();
 
     private:
