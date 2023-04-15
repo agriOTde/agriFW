@@ -12,7 +12,7 @@ double soilMoist::getPerc()
 {
     uint32_t voltage = getVoltage(sensorChannel);
     if(voltage < 1000 || voltage > 3500)
-    ESP_LOGE(TAG,"Voltage out of Bounds error voltage= %d", voltage );
+    ESP_LOGE(TAG,"Voltage out of Bounds error voltage= %lu", voltage );
     double MoistPerc = ((double(voltage)-MOISTMIN)/(MOISTMAX - MOISTMIN))*100.0;
     
     if(MoistPerc<0)

@@ -89,7 +89,7 @@ uint32_t getVoltage(uint8_t AdcChannel)
         ESP_LOGI(TAG_CH[0][0], "raw  data: %d", adc_raw[0][0]);
         if (cali_enable) {
             voltage = esp_adc_cal_raw_to_voltage(adc_raw[0][0], &adc1_chars);
-            ESP_LOGI(TAG_CH[0][0], "cali data: %d mV", voltage);
+            ESP_LOGI(TAG_CH[0][0], "cali data: %lu mV", voltage);
         }
 
         ESP_ERROR_CHECK(ret);

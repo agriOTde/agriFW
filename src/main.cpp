@@ -4,7 +4,6 @@
 #include "esp_system.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "lwip/sys.h"
 #include "soilMoist.h"
 
 // /***************** TAGS ******************/
@@ -27,7 +26,7 @@ extern "C"
     // static const char* TAG ="MAIN";
     // ESP_LOGD(TAG,"Hello in Main");
     printf("Main\n");
-    vTaskDelay(1000/ portTICK_RATE_MS);
+    vTaskDelay(1000/ portTICK_PERIOD_MS);
 
     // Tasks created
     xTaskCreatePinnedToCore
@@ -42,13 +41,13 @@ extern "C"
         
         soilMoist mois1(MOIST_2);
 
-        vTaskDelay(500/ portTICK_RATE_MS);
+        vTaskDelay(500/ portTICK_PERIOD_MS);
 
         voltage =  mois1.getVolt();
         moisturePerc = mois1.getPerc();
 
         printf("Moisture Pinging\n");
-        printf("Moisture Percent = %f\nRaw Voltage = %d", moisturePerc,voltage);
+        printf("Moisture Percent = %f\nRaw Voltage = %lu", moisturePerc,voltage);
         // TODO: Humidity Calibration
         // TODO: NPK Sensor Implementation
         // i++;
