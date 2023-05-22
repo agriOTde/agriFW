@@ -1,10 +1,35 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include <freertos/task.h>
+#include "freertos/event_groups.h"
+#include "soilMoist.h"
+#include <string.h>
 #include "esp_system.h"
+#include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_log.h"
-#include "soilMoist.h"
+#include "nvs_flash.h"
+#include "lwip/err.h"
+#include "lwip/sys.h"
+// #include "ESP32Ping.h"
+
+
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+// /***************** C headers ******************/
+#include "wifi_e.h"
+
+// /*********************************************/
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
+
+
 
 // /***************** TAGS ******************/
 // static const char *WIFI_TAG = "wifi station";
@@ -13,19 +38,43 @@
 // #define WLAN_SSID "Mr. Wick" 
 // #define WLAN_PSWD "myself.23"
 // const char* server="127.0.0.1:3000/country";
+    #define WIFI_CONNECTED_BIT BIT0
+    #define WIFI_FAIL_BIT      BIT1
+static const char *WIFI_TAG = "wifi station";
+
+
 
 TaskHandle_t myTaskHandle = NULL;
+
 extern "C"
 { 
     uint32_t voltage = 0;
     double moisturePerc = 0;
     void pingMoisture(void *arg);
 
+// static const char *WIFI_TAG = "wifi station";
+
     void app_main() {
 
     // static const char* TAG ="MAIN";
     // ESP_LOGD(TAG,"Hello in Main");
     printf("Main\n");
+
+    // -----------WIFI INIT-------------------
+        //Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      ESP_ERROR_CHECK(nvs_flash_erase());
+      ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    ESP_LOGI(WIFI_TAG, "ESP_WIFI_MODE_STA");
+    wifi_init_sta();
+
+
+    // -----------WIFI INIT-------------------
+
     vTaskDelay(1000/ portTICK_PERIOD_MS);
 
     // Tasks created
@@ -45,9 +94,12 @@ extern "C"
 
         voltage =  mois1.getVolt();
         moisturePerc = mois1.getPerc();
-
+        // bool ret = Ping.ping("www.google.com");
+        // float avg_time_ms = Ping.averageTime();
         printf("Moisture Pinging\n");
-        printf("Moisture Percent = %f\nRaw Voltage = %lu", moisturePerc,voltage);
+        printf("Moisture Percent = %f\nRaw Voltage = %lu",
+         moisturePerc,voltage);
+        
         // TODO: Humidity Calibration
         // TODO: NPK Sensor Implementation
         // i++;
@@ -57,4 +109,4 @@ extern "C"
     }
    }
 
-}
+};
