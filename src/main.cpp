@@ -44,7 +44,7 @@ extern "C"
     #define WIFI_CONNECTED_BIT BIT0
     #define WIFI_FAIL_BIT      BIT1
 static const char *WIFI_TAG = "wifi station";
-static const char *JSON_TAG = "wifi station";
+
 
 
 
@@ -98,27 +98,13 @@ extern "C"
         vTaskDelay(5000/ portTICK_PERIOD_MS);
         voltage =  mois1.getVolt();
         moisturePerc = mois1.getPerc();
-
         printf("Moisture Pinging\n");
-        
         printf("Moisture Percent = %f\nRaw Voltage = %lu",
         moisturePerc,voltage);
+        mois1.postData();
 
-        // POST DATA 
-        cJSON *root;
-        root = cJSON_CreateObject();
-        cJSON_AddNumberToObject(root, "moisturenum", i);
-        cJSON_AddNumberToObject(root, "moistureval", moisturePerc);
-
-        char *post_data = cJSON_Print(root);
-        ESP_LOGI(JSON_TAG, "my_json_string\n%s",post_data);
-        http_rest_with_url(post_data);
-
-        i++;
-
-
-        // TODO: Humidity Calibration
         // TODO: NPK Sensor Implementation
+        
         // if(i>5)
         //     break;}
         // vTaskDelete(myTaskHandle);

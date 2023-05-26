@@ -20,6 +20,7 @@ class soilMoist
     uint32_t getVolt();
     double getPerc();
     double getprevMoistPerc();
+    void postData();
 
     private:
     double prevMoistPerc = 0;

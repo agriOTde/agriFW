@@ -3,6 +3,23 @@
 #include "esp_log.h"
 static const char* TAG = "soilMoist";
 
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+
+// /***************** C headers ******************/
+#include "httpClient.h"
+#include "cJSON.h"
+// /*********************************************/
+
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
+// Var definitions
+static const char *JSON_TAG = "wifi station";
+
 uint32_t soilMoist::getVolt()
 {
     return getVoltage(sensorChannel);
@@ -33,4 +50,15 @@ double soilMoist::getprevMoistPerc()
 soilMoist::soilMoist(uint8_t sensNum)
 {
     sensorChannel = sensNum;
+}
+void soilMoist::postData()
+{
+        // POST DATA 
+        cJSON *root;
+        root = cJSON_CreateObject();
+        cJSON_AddNumberToObject(root, "moistureval", prevMoistPerc);
+
+        char *post_data = cJSON_Print(root);
+        ESP_LOGI(JSON_TAG, "my_json_string\n%s",post_data);
+        http_rest_with_url(post_data);
 }
