@@ -11,6 +11,8 @@
 #include "nvs_flash.h"
 #include "lwip/err.h"
 #include "lwip/sys.h"
+#include "cJSON.h"
+
 // #include "ESP32Ping.h"
 
 
@@ -21,6 +23,7 @@ extern "C"
 
 // /***************** C headers ******************/
 #include "wifi_e.h"
+#include "httpClient.h"
 
 // /*********************************************/
 
@@ -41,6 +44,7 @@ extern "C"
     #define WIFI_CONNECTED_BIT BIT0
     #define WIFI_FAIL_BIT      BIT1
 static const char *WIFI_TAG = "wifi station";
+static const char *JSON_TAG = "wifi station";
 
 
 
@@ -79,32 +83,45 @@ extern "C"
 
     // Tasks created
     xTaskCreatePinnedToCore
-    (pingMoisture, "Pinging Moisture from the sensors", 4096, NULL,10, &myTaskHandle, 1);
+    (pingMoisture, "Pinging Moisture from the sensors", 9000, NULL,10, &myTaskHandle, 1);
 
    }
    
    void pingMoisture(void *arg)
    {
-    // int i=0;
+    uint8_t i=0;
     while(1){
-        
+
+
         soilMoist mois1(MOIST_2);
 
-        vTaskDelay(500/ portTICK_PERIOD_MS);
-
+        vTaskDelay(1000/ portTICK_PERIOD_MS);
         voltage =  mois1.getVolt();
         moisturePerc = mois1.getPerc();
-        // bool ret = Ping.ping("www.google.com");
-        // float avg_time_ms = Ping.averageTime();
+
         printf("Moisture Pinging\n");
-        printf("Moisture Percent = %f\nRaw Voltage = %lu",
-         moisturePerc,voltage);
         
+        printf("Moisture Percent = %f\nRaw Voltage = %lu",
+        moisturePerc,voltage);
+
+        // POST DATA 
+        cJSON *root;
+        root = cJSON_CreateObject();
+        cJSON_AddNumberToObject(root, "moistureNum", i);
+        cJSON_AddNumberToObject(root, "moistureVal", moisturePerc);
+
+        const char *my_json_string = cJSON_Print(root);
+        char *post_data = cJSON_Print(root);
+        ESP_LOGI(JSON_TAG, "my_json_string\n%s",post_data);
+        http_rest_with_url(post_data);
+
+        i++;
+
+
         // TODO: Humidity Calibration
         // TODO: NPK Sensor Implementation
-        // i++;
         // if(i>5)
-        //     break;
+        //     break;}
         // vTaskDelete(myTaskHandle);
     }
    }
