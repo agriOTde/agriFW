@@ -95,7 +95,7 @@ extern "C"
 
         soilMoist mois1(MOIST_2);
 
-        vTaskDelay(1000/ portTICK_PERIOD_MS);
+        vTaskDelay(5000/ portTICK_PERIOD_MS);
         voltage =  mois1.getVolt();
         moisturePerc = mois1.getPerc();
 
@@ -107,10 +107,9 @@ extern "C"
         // POST DATA 
         cJSON *root;
         root = cJSON_CreateObject();
-        cJSON_AddNumberToObject(root, "moistureNum", i);
-        cJSON_AddNumberToObject(root, "moistureVal", moisturePerc);
+        cJSON_AddNumberToObject(root, "moisturenum", i);
+        cJSON_AddNumberToObject(root, "moistureval", moisturePerc);
 
-        const char *my_json_string = cJSON_Print(root);
         char *post_data = cJSON_Print(root);
         ESP_LOGI(JSON_TAG, "my_json_string\n%s",post_data);
         http_rest_with_url(post_data);

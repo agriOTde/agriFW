@@ -170,6 +170,8 @@ void http_rest_with_url(char *post_data )
     } else {
         ESP_LOGE(TAG, "HTTP POST request failed: %s", esp_err_to_name(err));
     }
+    esp_http_client_cleanup(client);
+
 }
 
 
