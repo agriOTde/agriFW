@@ -1,8 +1,8 @@
+// General Includes
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include <freertos/task.h>
 #include "freertos/event_groups.h"
-#include "soilMoist.h"
 #include <string.h>
 #include "esp_system.h"
 #include "esp_wifi.h"
@@ -13,7 +13,8 @@
 #include "lwip/sys.h"
 #include "cJSON.h"
 
-// #include "ESP32Ping.h"
+// Custom C++ headers
+#include "soilMoist.h"
 
 
 #ifdef __cplusplus
@@ -65,7 +66,7 @@ extern "C"
     printf("Main\n");
 
     // -----------WIFI INIT-------------------
-        //Initialize NVS
+    //Initialize NVS
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
       ESP_ERROR_CHECK(nvs_flash_erase());
@@ -75,6 +76,7 @@ extern "C"
 
     ESP_LOGI(WIFI_TAG, "ESP_WIFI_MODE_STA");
     wifi_init_sta();
+    // TODO: add certificates and key validation to connect to DB
 
 
     // -----------WIFI INIT-------------------
@@ -86,7 +88,8 @@ extern "C"
     (pingMoisture, "Pinging Moisture from the sensors", 9000, NULL,10, &myTaskHandle, 1);
 
    }
-   
+//    TODO: Add Ping for NPK sensor as well
+
    void pingMoisture(void *arg)
    {
     uint8_t i=0;
@@ -104,7 +107,7 @@ extern "C"
         mois1.postData();
 
         // TODO: NPK Sensor Implementation
-        
+
         // if(i>5)
         //     break;}
         // vTaskDelete(myTaskHandle);

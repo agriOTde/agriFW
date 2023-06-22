@@ -59,6 +59,6 @@ void soilMoist::postData()
         cJSON_AddNumberToObject(root, "moistureval", prevMoistPerc);
 
         char *post_data = cJSON_Print(root);
-        ESP_LOGI(JSON_TAG, "my_json_string\n%s",post_data);
+        ESP_LOGI(JSON_TAG, "Moisture data\n%s",post_data);
         http_rest_with_url(post_data);
 }
