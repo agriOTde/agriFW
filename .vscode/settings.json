@@ -1,0 +1,12 @@
+{
+    "files.associations": {
+        "stdio.h": "c",
+        "cjson.h": "c",
+        "httpclient.h": "c",
+        "uart.h": "c",
+        "critical_section.h": "c",
+        "cstddef": "cpp",
+        "serial_uart.h": "c",
+        "stddef.h": "c"
+    }
+}
