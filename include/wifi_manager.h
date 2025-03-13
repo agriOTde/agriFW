@@ -1,0 +1,24 @@
+#ifndef WIFI_MANAGER_H
+#define WIFI_MANAGER_H
+
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+
+#define WIFI_SSID      "TP-Link_75CD"      // Change this to your Wi-Fi SSID
+#define WIFI_PASS      "63331776"  // Change this to your Wi-Fi Password
+#define MAX_RETRIES    5
+
+// Event group for Wi-Fi connection
+extern EventGroupHandle_t wifi_event_group;
+#define WIFI_CONNECTED_BIT BIT0
+
+// Function declarations
+void wifi_init_sta(void);
+
+void set_dns(void);
+
+#endif /* WIFI_MANAGER_H */

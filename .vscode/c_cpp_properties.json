@@ -289,8 +289,10 @@
                 "SOC_MMU_PAGE_SIZE=CONFIG_MMU_PAGE_SIZE",
                 "IDF_VER=\"5.0.2\"",
                 "ESP_PLATFORM",
-                "PLATFORMIO=60117",
+                "PLATFORMIO=60118",
                 "ARDUINO_NodeMCU_32S",
+                "MQTT_BUFFER_SIZE=4096",
+                "MQTT_PROTOCOL_311=y",
                 ""
             ],
             "cStandard": "gnu17",
