@@ -10,6 +10,7 @@ Repo for the FW of the Agri Edge device capable of sending Temp and Humidity dat
 ### Sensors
 
 * SHT31 Temp/Hum Sensor
+* Ph sensor Included
 
 ### Future Work
 
