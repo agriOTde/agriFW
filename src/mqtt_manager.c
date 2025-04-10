@@ -5,19 +5,26 @@
 #include "mqtt_client.h"
 #include "secrets.h"  // AWS certs & keys
 
+#define LOG_LOCAL_LEVEL ESP_LOG_ERROR
+
 static const char *TAG = "MQTT";
 static esp_mqtt_client_handle_t client;  // MQTT client handle
+static bool mqtt_connected = false;
 
 // MQTT event handler
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
     esp_mqtt_event_handle_t event = event_data;
+
+    
     
     switch (event->event_id) {
         case MQTT_EVENT_CONNECTED:
             ESP_LOGI(TAG, "MQTT Connected");
+            mqtt_connected = true;
             break;
         case MQTT_EVENT_DISCONNECTED:
             ESP_LOGI(TAG, "MQTT Disconnected");
+            mqtt_connected = false;
             break;
         case MQTT_EVENT_DATA:
             ESP_LOGI(TAG, "Received message on topic %s: %.*s", event->topic, event->data_len, event->data);
@@ -34,10 +41,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 // Initialize MQTT
 void mqtt_init(void) {
     esp_mqtt_client_config_t mqtt_cfg = {
-        .broker.address.uri = MQTT_BROKER_URI,
-        .broker.verification.certificate = (const char *)aws_root_ca_pem,
-        .credentials.authentication.certificate = (const char *)device_cert_pem,
-        .credentials.authentication.key = (const char *)device_key_pem,
+        .broker.address.uri = RPI_MQTT_BROKER_URI,
+        // .broker.verification.certificate = (const char *)aws_root_ca_pem,
+        // .credentials.authentication.certificate = (const char *)device_cert_pem,
+        // .credentials.authentication.key = (const char *)device_key_pem,
         .network.timeout_ms = 5000
     };
 
@@ -45,12 +52,20 @@ void mqtt_init(void) {
     esp_mqtt_client_register_event(client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     esp_mqtt_client_start(client);
 }
-
 // Publish a message
-void mqtt_publish(const char *topic, const char *message) {
-    if (client) {
-        esp_mqtt_client_publish(client, topic, message, 0, 1, 0);
+uint16_t mqtt_publish(const char *topic, const char *message) {
+    if (client && mqtt_connected) {
+        return esp_mqtt_client_publish(client, topic, message, 0, 0, 0);
     } else {
-        ESP_LOGE(TAG, "MQTT client not initialized");
+        ESP_LOGW("MQTT", "Client not connected — skipping publish");
+        return ESP_FAIL;
+    }
+}
+
+void mqtt_reconnect(void) {
+    if (client) {
+        esp_mqtt_client_stop(client);
+        esp_mqtt_client_start(client);
+        ESP_LOGI(TAG, "MQTT client restarted after Wi-Fi reconnect");
     }
 }

@@ -1,4 +1,5 @@
 #include "wifi_manager.h"
+#include "mqtt_manager.h"
 #include "esp_netif.h"
 #include <string.h>
 
@@ -15,7 +16,15 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             esp_wifi_connect();
             retry_count++;
             ESP_LOGI("WiFi", "Retrying connection (%d/%d)", retry_count, MAX_RETRIES);
-        } else {
+        } else if (retry_count >= MAX_RETRIES){
+            ESP_LOGW("WiFi", "Max retries reached. Restarting Wi-Fi.");
+            esp_wifi_stop();
+            vTaskDelay(pdMS_TO_TICKS(2000));  // Wait a bit
+            esp_wifi_start();  // Restart Wi-Fi, this will trigger STA_START -> connect again
+            retry_count = 0;   // Reset retries to allow normal flow
+            
+        }
+        else{
             ESP_LOGI("WiFi", "Failed to connect to Wi-Fi");
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -23,6 +32,8 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI("WiFi", "Connected! IP Address: " IPSTR, IP2STR(&event->ip_info.ip));
         retry_count = 0; // Reset retry count
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+
+        mqtt_reconnect(); //try reconnecting MQTT again
     }
 }
 
@@ -59,6 +70,8 @@ void wifi_init_sta() {
     esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_config(WIFI_IF_STA, &wifi_config);
     esp_wifi_start();
+
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
     ESP_LOGI("WiFi", "Wi-Fi initialization completed.");
 }
