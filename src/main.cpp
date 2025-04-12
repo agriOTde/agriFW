@@ -2,12 +2,14 @@
 #include "freertos/FreeRTOS.h"
 #include <freertos/task.h>
 #include "freertos/event_groups.h"
+#include "freertos/semphr.h"
 #include "esp_task_wdt.h"
 #include "mqtt_manager.h"
 #include "generic_uart_driver.h"
 #include "sht31.h"
 #include "driver/i2c.h"
 #include <string.h>
+#include <math.h>
 #include "esp_system.h"
 #include "esp_event.h"
 #include "lwip/err.h"
@@ -51,13 +53,30 @@ static const char *MQTT_TAG = "MQTT";
 
 TaskHandle_t myTaskHandle = NULL;
 
+// ################ Shared Data Struct ################
+
+typedef struct {
+    float temperature;
+    float humidity;
+    float s_ph_value;
+    float s_temp_value;
+    float s_hum_value;
+    bool new_data_ready;  // Flag to indicate new data is available
+} sensor_data_t;
+
+sensor_data_t shared_data;
+SemaphoreHandle_t data_mutex;
+
+// ####################################################
+
 extern "C"
 { 
 
 // ################# Function Declarations ####################
 // Tasks
-void post_data_task(void *arg);
-void post_ph_task(void *arg);
+void ping_sht_task(void *arg);
+void ping_ph_task(void *arg);
+void post_mqtt_task(void *arg);
 
 //other
 static esp_err_t i2c_master_init();
@@ -111,14 +130,9 @@ void app_main() {
 
     // Set DNS and test DNS resolution
     set_dns();
-    struct addrinfo *res;
-    int err = getaddrinfo("aeti3itrm7uta-ats.iot.eu-north-1.amazonaws.com", NULL, NULL, &res);
-    if (err == 0) {
-        ESP_LOGI("DNS", "Hostname resolved successfully!");
-        freeaddrinfo(res);
-    } else {
-        ESP_LOGE("DNS", "Failed to resolve hostname. Error: %d", err);
-    }
+
+    // Create shared semaphore
+    data_mutex = xSemaphoreCreateMutex();
 
     // Initialize I2C
     ESP_LOGI(MAIN_TAG, "Initializing I2C...");
@@ -127,10 +141,10 @@ void app_main() {
         return;
     }
 
-    // Task to handle SHT sensor data
-    xTaskCreatePinnedToCore(post_ph_task, "Pinging PH sensor", 4096, NULL, 4, &myTaskHandle, 1);
-
-    xTaskCreatePinnedToCore(post_data_task, "posting SHT31", 4096, NULL, 5, &myTaskHandle, 1);
+    // Tasks
+    xTaskCreatePinnedToCore(ping_ph_task, "Pinging PH sensor", 4096, NULL, 3, &myTaskHandle, 1);
+    xTaskCreatePinnedToCore(ping_sht_task, "posting SHT31", 4096, NULL, 4, &myTaskHandle, 1);
+    xTaskCreatePinnedToCore(post_mqtt_task, "posting MQTT Data", 4096, NULL, 5, &myTaskHandle, 1);
 }
 
 static esp_err_t i2c_master_init() {
@@ -157,11 +171,11 @@ static esp_err_t i2c_master_init() {
     return ret;
 }
 
-void post_ph_task(void *arg){
+void ping_ph_task(void *arg){
 
     uint8_t REQ_BYTE[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x04, 0x44, 0x09};
     uint8_t rx_buf[256];
-    uint16_t humidity, temperature, conductivity, pH;
+    uint16_t humidity, temperature, pH;
     // UART configuration
     uart_device_config_t uart_config = {
         .uart_port = UART_NUM_2,
@@ -197,7 +211,6 @@ void post_ph_task(void *arg){
             // Example of reading data from the response frame
             humidity = (rx_buf[3] << 8) | rx_buf[4];  // Combine low and high bytes for humidity
             temperature = (rx_buf[5] << 8) | rx_buf[6];  // Combine low and high bytes for temperature
-            conductivity = (rx_buf[7] << 8) | rx_buf[8];  // Combine low and high bytes for conductivity
             pH = (rx_buf[9] << 8) | rx_buf[10];  // Combine low and high bytes for pH value
 
             // Convert pH to a human-readable value (0.1 increment)
@@ -205,7 +218,15 @@ void post_ph_task(void *arg){
             float humidity_value = humidity / 10.0;
             float temperature_value = temperature / 10.0;
 
-            ESP_LOGI(PH_TAG, "Humidity: %.1f%, Temperature: %.2f deg_C, Conductivity: %d, pH: %.1f", humidity_value, temperature_value, conductivity, pH_value);
+            ESP_LOGI(PH_TAG, "Humidity: %.1f%%, Temperature: %.2f deg_C, pH: %.1f", humidity_value, temperature_value, pH_value);
+
+            // Lock shared data for writing
+            xSemaphoreTake(data_mutex, portMAX_DELAY);
+            shared_data.s_ph_value = pH_value;
+            shared_data.s_temp_value = temperature_value;
+            shared_data.s_hum_value = humidity_value;
+            shared_data.new_data_ready = true; // Mark new data as ready
+            xSemaphoreGive(data_mutex); // Release lock
 
             // Store or process the values (e.g., send to MQTT, store in NVS, etc.)
             // cJSON *mqtt_data = cJSON_CreateObject();
@@ -223,15 +244,13 @@ void post_ph_task(void *arg){
         } else {
             ESP_LOGE(PH_TAG, "Sensor Receive Failed!\n");
         }
-        
-        
-    
+            
     }
     vTaskDelete(NULL);
 }
 
 
-void post_data_task(void *arg) {
+void ping_sht_task(void *arg) {
     SHT31Sensor sensor(I2C_MASTER_NUM, SHT31_I2C_ADDR);
     if (!sensor.init()) {
         vTaskDelete(NULL);
@@ -247,15 +266,21 @@ void post_data_task(void *arg) {
 
             ESP_LOGI(SHT_TAG, "Temperature: %.2f °C, Humidity: %.2f %%", temperature, humidity);
 
-            cJSON *mqtt_data = cJSON_CreateObject();
-            cJSON_AddNumberToObject(mqtt_data, "Temp", temperature);
-            cJSON_AddNumberToObject(mqtt_data, "moistureVal", humidity);
-            const char *my_json_string = cJSON_Print(mqtt_data);
-            if (mqtt_publish(MQTT_TOPIC_PUB, my_json_string) != ESP_OK) {
-                ESP_LOGE(MQTT_TAG, "MQTT client not Publishing");
-            }
-            free((void *)my_json_string);  // Free the memory used by JSON string
-            cJSON_Delete(mqtt_data);
+            xSemaphoreTake(data_mutex, portMAX_DELAY);
+            shared_data.temperature = temperature;
+            shared_data.humidity = humidity;
+            shared_data.new_data_ready = true; // Mark new data as ready
+            xSemaphoreGive(data_mutex); // Release lock
+
+            // cJSON *mqtt_data = cJSON_CreateObject();
+            // cJSON_AddNumberToObject(mqtt_data, "Temp", temperature);
+            // cJSON_AddNumberToObject(mqtt_data, "moistureVal", humidity);
+            // const char *my_json_string = cJSON_Print(mqtt_data);
+            // if (mqtt_publish(MQTT_TOPIC_PUB, my_json_string) != ESP_OK) {
+            //     ESP_LOGE(MQTT_TAG, "MQTT client not Publishing");
+            // }
+            // free((void *)my_json_string);  // Free the memory used by JSON string
+            // cJSON_Delete(mqtt_data);
 
         } else {
             ESP_LOGE(SHT_TAG, "Failed to read temperature and humidity");
@@ -267,6 +292,62 @@ void post_data_task(void *arg) {
     }
 
     vTaskDelete(NULL);
+}
+
+void post_mqtt_task(void *arg){
+
+    while (1) {
+        //Time period
+        vTaskDelay(pdMS_TO_TICKS(180000)); // Wait 30 seconds before next read
+
+        // Wait for new data from either task
+        if (shared_data.new_data_ready) {
+            // Lock shared data for reading
+            xSemaphoreTake(data_mutex, portMAX_DELAY);
+
+            // Add debugging log to verify values
+            ESP_LOGI(MQTT_TAG, "Preparing to send MQTT data: Temp = %.2f, Hum = %.2f, pH = %.2f",
+                shared_data.s_temp_value, shared_data.s_hum_value, shared_data.s_ph_value);
+
+                        // Round values to two decimal places before adding them to JSON
+            shared_data.temperature = round(shared_data.temperature * 100.0) / 100.0;
+            shared_data.humidity = round(shared_data.humidity * 100.0) / 100.0;
+            shared_data.s_hum_value = round(shared_data.s_hum_value * 100.0) / 100.0;
+            shared_data.s_temp_value = round(shared_data.s_temp_value * 100.0) / 100.0;
+            shared_data.s_ph_value = round(shared_data.s_ph_value * 100.0) / 100.0;
+
+
+            // Prepare the MQTT message
+            cJSON *mqtt_data = cJSON_CreateObject();
+            cJSON_AddNumberToObject(mqtt_data, "tempVal", shared_data.temperature);
+            cJSON_AddNumberToObject(mqtt_data, "humVal", shared_data.humidity);
+            cJSON_AddNumberToObject(mqtt_data, "sHumVal", shared_data.s_hum_value);
+            cJSON_AddNumberToObject(mqtt_data, "sTempVal", shared_data.s_temp_value);
+            cJSON_AddNumberToObject(mqtt_data, "sPhVal", shared_data.s_ph_value);
+
+            // Publish the message
+            const char *mqtt_json_string = cJSON_Print(mqtt_data);
+            if (mqtt_publish(MQTT_TOPIC_PUB, mqtt_json_string) != ESP_OK) {
+                ESP_LOGE(MQTT_TAG, "Failed to publish data");
+            }
+            ESP_LOGI(MQTT_TAG, "Published data: %s", mqtt_json_string);
+
+            // Free the JSON string and delete object
+            free((void *)mqtt_json_string);
+            cJSON_Delete(mqtt_data);
+
+            // Clear the new data flag
+            shared_data.new_data_ready = false;
+
+            // Release lock
+            xSemaphoreGive(data_mutex);
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));  // Delay before checking again
+    }
+
+    vTaskDelete(NULL);
+
 }
 
 void log_error_to_nvs(const char *error_message) {
