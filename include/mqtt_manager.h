@@ -11,11 +11,11 @@ extern "C" {
 #include "esp_err.h"
 
 #define MQTT_BROKER_URI "mqtts://aeti3itrm7uta-ats.iot.eu-north-1.amazonaws.com:8883"
-#define RPI_MQTT_BROKER_URI "mqtt://192.168.1.100:1883"
+#define RPI_MQTT_BROKER_URI "mqtt://192.168.1.100:1884"
 
 
 // Initialize MQTT
-void mqtt_init(void);
+void mqtt_init(const char **topics, int num_topics);
 
 // Publish a message
 uint16_t mqtt_publish(const char *topic, const char *message);

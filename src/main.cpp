@@ -5,6 +5,7 @@
 #include "freertos/semphr.h"
 #include "esp_task_wdt.h"
 #include "mqtt_manager.h"
+#include "sharedData.h"
 #include "generic_uart_driver.h"
 #include "sht31.h"
 #include "driver/i2c.h"
@@ -23,10 +24,13 @@
 #define I2C_MASTER_FREQ_HZ   100000 /*!< I2C clock frequency */
 #define I2C_MASTER_TX_BUF_DISABLE  0 /*!< I2C disable TX buffer */
 #define I2C_MASTER_RX_BUF_DISABLE  0 /*!< I2C disable RX buffer */
+#define MOTOR_PIN GPIO_NUM_12 /*!< GPIO number for Motor */
+#define MQTT_PUBLISH_DELAY 2000 /*!< GPIO number for Motor */
 
 
-#define MQTT_TOPIC_PUB "esp32/pub"
-#define MQTT_TOPIC_SUB "esp32/sub"
+const char *subscribe_topics[] = {
+    MQTT_TOPIC_SUB
+};
 
 // #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
 #define MAX_LOGS_NVS 5
@@ -50,24 +54,10 @@ static const char *PH_TAG = "PH sensor";
 static const char *MAIN_TAG = "MAIN";
 static const char *PUB_TAG = "Publish topic";
 static const char *MQTT_TAG = "MQTT";
+static const char *MOTOR_TAG = "Motor";
 
 TaskHandle_t myTaskHandle = NULL;
-
-// ################ Shared Data Struct ################
-
-typedef struct {
-    float temperature;
-    float humidity;
-    float s_ph_value;
-    float s_temp_value;
-    float s_hum_value;
-    bool new_data_ready;  // Flag to indicate new data is available
-} sensor_data_t;
-
 sensor_data_t shared_data;
-SemaphoreHandle_t data_mutex;
-
-// ####################################################
 
 extern "C"
 { 
@@ -77,7 +67,6 @@ extern "C"
 void ping_sht_task(void *arg);
 void ping_ph_task(void *arg);
 void post_mqtt_task(void *arg);
-void listen_mqtt_task(void *arg);
 void drive_motor_task(void *arg);
 
 //other
@@ -127,14 +116,15 @@ void app_main() {
     wifi_init_sta();
 
     // Init MQTT Client
-    mqtt_init();
+    mqtt_init(subscribe_topics, sizeof(subscribe_topics)/sizeof(subscribe_topics[0]));
 
 
     // Set DNS and test DNS resolution
     set_dns();
 
     // Create shared semaphore
-    data_mutex = xSemaphoreCreateMutex();
+    data_publish_mutex = xSemaphoreCreateMutex();
+    shared_sub_data_mutex = xSemaphoreCreateMutex();
 
     // Initialize I2C
     ESP_LOGI(MAIN_TAG, "Initializing I2C...");
@@ -144,9 +134,10 @@ void app_main() {
     }
 
     // Tasks
-    xTaskCreatePinnedToCore(ping_ph_task, "Pinging PH sensor", 4096, NULL, 3, &myTaskHandle, 1);
-    xTaskCreatePinnedToCore(ping_sht_task, "posting SHT31", 4096, NULL, 4, &myTaskHandle, 1);
-    xTaskCreatePinnedToCore(post_mqtt_task, "posting MQTT Data", 4096, NULL, 5, &myTaskHandle, 1);
+    xTaskCreatePinnedToCore(drive_motor_task, "Pinging PH sensor", 4096, NULL, 3, &myTaskHandle, 1);
+    xTaskCreatePinnedToCore(ping_ph_task, "Pinging PH sensor", 4096, NULL, 4, &myTaskHandle, 1);
+    xTaskCreatePinnedToCore(ping_sht_task, "posting SHT31", 4096, NULL, 5, &myTaskHandle, 1);
+    xTaskCreatePinnedToCore(post_mqtt_task, "posting MQTT Data", 4096, NULL, 6, &myTaskHandle, 1);
 }
 
 static esp_err_t i2c_master_init() {
@@ -223,12 +214,12 @@ void ping_ph_task(void *arg){
             ESP_LOGI(PH_TAG, "Humidity: %.1f%%, Temperature: %.2f deg_C, pH: %.1f", humidity_value, temperature_value, pH_value);
 
             // Lock shared data for writing
-            xSemaphoreTake(data_mutex, portMAX_DELAY);
+            xSemaphoreTake(data_publish_mutex, portMAX_DELAY);
             shared_data.s_ph_value = pH_value;
             shared_data.s_temp_value = temperature_value;
             shared_data.s_hum_value = humidity_value;
             shared_data.new_data_ready = true; // Mark new data as ready
-            xSemaphoreGive(data_mutex); // Release lock
+            xSemaphoreGive(data_publish_mutex); // Release lock
 
             // Store or process the values (e.g., send to MQTT, store in NVS, etc.)
             // cJSON *mqtt_data = cJSON_CreateObject();
@@ -255,6 +246,7 @@ void ping_ph_task(void *arg){
 void ping_sht_task(void *arg) {
     SHT31Sensor sensor(I2C_MASTER_NUM, SHT31_I2C_ADDR);
     if (!sensor.init()) {
+        ESP_LOGE(SHT_TAG, "SHT Failed to Initialize!");
         vTaskDelete(NULL);
         return;
     }
@@ -268,11 +260,11 @@ void ping_sht_task(void *arg) {
 
             ESP_LOGI(SHT_TAG, "Temperature: %.2f °C, Humidity: %.2f %%", temperature, humidity);
 
-            xSemaphoreTake(data_mutex, portMAX_DELAY);
+            xSemaphoreTake(data_publish_mutex, portMAX_DELAY);
             shared_data.temperature = temperature;
             shared_data.humidity = humidity;
             shared_data.new_data_ready = true; // Mark new data as ready
-            xSemaphoreGive(data_mutex); // Release lock
+            xSemaphoreGive(data_publish_mutex); // Release lock
 
             // cJSON *mqtt_data = cJSON_CreateObject();
             // cJSON_AddNumberToObject(mqtt_data, "Temp", temperature);
@@ -300,12 +292,12 @@ void post_mqtt_task(void *arg){
 
     while (1) {
         //Time period
-        vTaskDelay(pdMS_TO_TICKS(180000)); // Wait 30 seconds before next read
+        vTaskDelay(pdMS_TO_TICKS(MQTT_PUBLISH_DELAY)); // Wait 30 seconds before next read
 
         // Wait for new data from either task
         if (shared_data.new_data_ready) {
             // Lock shared data for reading
-            xSemaphoreTake(data_mutex, portMAX_DELAY);
+            xSemaphoreTake(data_publish_mutex, portMAX_DELAY);
 
             // Add debugging log to verify values
             ESP_LOGI(MQTT_TAG, "Preparing to send MQTT data: Temp = %.2f, Hum = %.2f, pH = %.2f",
@@ -342,7 +334,7 @@ void post_mqtt_task(void *arg){
             shared_data.new_data_ready = false;
 
             // Release lock
-            xSemaphoreGive(data_mutex);
+            xSemaphoreGive(data_publish_mutex);
         }
 
         vTaskDelay(pdMS_TO_TICKS(1000));  // Delay before checking again
@@ -350,6 +342,82 @@ void post_mqtt_task(void *arg){
 
     vTaskDelete(NULL);
 
+}
+
+void drive_motor_task(void *arg) {
+
+       // 1. Configure the GPIO pin
+       gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << MOTOR_PIN),  // Bitmask for the pin
+        .mode = GPIO_MODE_OUTPUT,           // Set as output mode
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE      // No interrupts
+    };
+    gpio_config(&io_conf);
+
+    bool previous_motor_state = false;
+
+    while (1) {
+        // Lock shared data to read motor state
+        xSemaphoreTake(shared_sub_data_mutex, portMAX_DELAY);
+
+        bool current_motor_state = shared_sub_data.motor_command;
+
+        // If the motor state has changed
+        if (current_motor_state != previous_motor_state) {
+            if (current_motor_state == true) {
+                // Start motor if not already started
+                ESP_LOGI(MOTOR_TAG, "Motor Start Command received");
+                gpio_set_level(MOTOR_PIN, 1);  // Set pin high (motor on)
+
+                // Send acknowledgment to broker
+                cJSON *ack_data = cJSON_CreateObject();
+                cJSON_AddStringToObject(ack_data, "status", "Motor Started");
+
+                const char *ack_json_string = cJSON_Print(ack_data);
+                if (mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_json_string) != ESP_OK) {
+                    ESP_LOGE(MOTOR_TAG, "Failed to publish motor start acknowledgment");
+                } else {
+                    ESP_LOGI(MOTOR_TAG, "Published motor start acknowledgment");
+                }
+
+                free((void *)ack_json_string);
+                cJSON_Delete(ack_data);
+
+            } else {
+
+                // Stop motor if not already stopped
+                ESP_LOGI(MOTOR_TAG, "Motor Stop Command received");
+                gpio_set_level(MOTOR_PIN, 0);  // Set pin low (motor off)
+
+                // Send acknowledgment to broker
+                cJSON *ack_data = cJSON_CreateObject();
+                cJSON_AddStringToObject(ack_data, "status", "Motor Stopped");
+                const char *ack_json_string = cJSON_Print(ack_data);
+
+                if (mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_json_string) != ESP_OK) {
+                    ESP_LOGE(MOTOR_TAG, "Failed to publish motor stop acknowledgment");
+                } else {
+                    ESP_LOGI(MOTOR_TAG, "Published motor stop acknowledgment");
+                }
+
+                free((void *)ack_json_string);
+                cJSON_Delete(ack_data);
+            }
+
+            // Update previous state
+            previous_motor_state = current_motor_state;
+        }
+
+        // Release the lock after checking the state
+        xSemaphoreGive(shared_sub_data_mutex);
+
+        // Check the motor state every 2 seconds
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+
+    vTaskDelete(NULL);
 }
 
 void log_error_to_nvs(const char *error_message) {
