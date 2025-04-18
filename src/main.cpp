@@ -77,6 +77,8 @@ extern "C"
 void ping_sht_task(void *arg);
 void ping_ph_task(void *arg);
 void post_mqtt_task(void *arg);
+void listen_mqtt_task(void *arg);
+void drive_motor_task(void *arg);
 
 //other
 static esp_err_t i2c_master_init();
