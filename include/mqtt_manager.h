@@ -23,6 +23,9 @@ uint16_t mqtt_publish(const char *topic, const char *message);
 // Reconnet MQTT
 void mqtt_reconnect(void);
 
+void parseScheduleJson(const char *jsonBuffer);
+void parseCommandJson(const char *jsonBuffer);
+
 #ifdef __cplusplus
 }
 #endif

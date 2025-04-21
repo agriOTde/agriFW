@@ -29,7 +29,8 @@
 
 
 const char *subscribe_topics[] = {
-    MQTT_TOPIC_SUB
+    MQTT_TOPIC_MOTOR_CMD,
+    MQTT_TOPIC_MOTOR_SCHEDULE
 };
 
 // #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
@@ -134,7 +135,7 @@ void app_main() {
     }
 
     // Tasks
-    xTaskCreatePinnedToCore(drive_motor_task, "Pinging PH sensor", 4096, NULL, 3, &myTaskHandle, 1);
+    xTaskCreatePinnedToCore(drive_motor_task, "Driving Motor", 4096, NULL, 3, &myTaskHandle, 0);
     xTaskCreatePinnedToCore(ping_ph_task, "Pinging PH sensor", 4096, NULL, 4, &myTaskHandle, 1);
     xTaskCreatePinnedToCore(ping_sht_task, "posting SHT31", 4096, NULL, 5, &myTaskHandle, 1);
     xTaskCreatePinnedToCore(post_mqtt_task, "posting MQTT Data", 4096, NULL, 6, &myTaskHandle, 1);
@@ -346,25 +347,33 @@ void post_mqtt_task(void *arg){
 
 void drive_motor_task(void *arg) {
 
-       // 1. Configure the GPIO pin
-       gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << MOTOR_PIN),  // Bitmask for the pin
-        .mode = GPIO_MODE_OUTPUT,           // Set as output mode
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE      // No interrupts
+
+    ESP_LOGI(MOTOR_TAG, "Motor");
+
+    uint16_t duration = 5000;  // Default motor running duration
+    bool current_motor_state = false;  // Default motor state (OFF)
+
+    // Configure the GPIO pin for motor control
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << MOTOR_PIN),  // Bitmask for the motor pin
+        .mode = GPIO_MODE_OUTPUT,             // Set as output mode
+        .pull_up_en = GPIO_PULLUP_DISABLE,   // Disable pull-up resistor
+        .pull_down_en = GPIO_PULLDOWN_DISABLE, // Disable pull-down resistor
+        .intr_type = GPIO_INTR_DISABLE       // No interrupts
     };
     gpio_config(&io_conf);
 
-    bool previous_motor_state = false;
+    bool previous_motor_state = false;  // Track the previous motor state
 
     while (1) {
         // Lock shared data to read motor state
-        xSemaphoreTake(shared_sub_data_mutex, portMAX_DELAY);
+        if (xSemaphoreTake(shared_sub_data_mutex, portMAX_DELAY) == pdTRUE) {
+            current_motor_state = shared_sub_data.motor_command;
+            duration = shared_sub_data.motor_duration;  // Get the duration to run the motor
+        // ESP_LOGI(MOTOR_TAG, "Duration = %d, Command = %d",duration,current_motor_state);
 
-        bool current_motor_state = shared_sub_data.motor_command;
 
-        // If the motor state has changed
+        // If the motor state has changed (from OFF to ON or vice versa)
         if (current_motor_state != previous_motor_state) {
             if (current_motor_state == true) {
                 // Start motor if not already started
@@ -374,27 +383,31 @@ void drive_motor_task(void *arg) {
                 // Send acknowledgment to broker
                 cJSON *ack_data = cJSON_CreateObject();
                 cJSON_AddStringToObject(ack_data, "status", "Motor Started");
-
                 const char *ack_json_string = cJSON_Print(ack_data);
+
                 if (mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_json_string) != ESP_OK) {
                     ESP_LOGE(MOTOR_TAG, "Failed to publish motor start acknowledgment");
                 } else {
                     ESP_LOGI(MOTOR_TAG, "Published motor start acknowledgment");
                 }
 
+                // Free memory used by JSON string and object
                 free((void *)ack_json_string);
                 cJSON_Delete(ack_data);
 
-            } else {
+                // Motor ON Duration
+                vTaskDelay(pdMS_TO_TICKS((int)duration));  // Wait for the motor to run for the specified duration
 
-                // Stop motor if not already stopped
-                ESP_LOGI(MOTOR_TAG, "Motor Stop Command received");
+                // Turn the motor off
                 gpio_set_level(MOTOR_PIN, 0);  // Set pin low (motor off)
+                ESP_LOGI(MOTOR_TAG, "Motor stopped after %d ms", duration);
+                current_motor_state = false;
+                shared_sub_data.motor_command = false;
 
                 // Send acknowledgment to broker
-                cJSON *ack_data = cJSON_CreateObject();
+                ack_data = cJSON_CreateObject();
                 cJSON_AddStringToObject(ack_data, "status", "Motor Stopped");
-                const char *ack_json_string = cJSON_Print(ack_data);
+                ack_json_string = cJSON_Print(ack_data);
 
                 if (mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_json_string) != ESP_OK) {
                     ESP_LOGE(MOTOR_TAG, "Failed to publish motor stop acknowledgment");
@@ -402,21 +415,30 @@ void drive_motor_task(void *arg) {
                     ESP_LOGI(MOTOR_TAG, "Published motor stop acknowledgment");
                 }
 
+                // Free memory used by JSON string and object
                 free((void *)ack_json_string);
                 cJSON_Delete(ack_data);
+
+                
             }
 
-            // Update previous state
+            // Update the previous motor state after handling the state change
             previous_motor_state = current_motor_state;
-        }
-
-        // Release the lock after checking the state
+            }
+        
         xSemaphoreGive(shared_sub_data_mutex);
-
-        // Check the motor state every 2 seconds
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        } else {
+            ESP_LOGW(MOTOR_TAG, "Failed to acquire semaphore. Skipping update.");
+            vTaskDelay(pdMS_TO_TICKS(1000));  // Retry after 1 second or exit early
+            continue;
+            
     }
 
+        // Add a delay before checking again for a new motor command
+        vTaskDelay(pdMS_TO_TICKS(100));  // Periodically check motor state
+    }
+
+    // Task cleanup (shouldn't reach here unless task is deleted)
     vTaskDelete(NULL);
 }
 

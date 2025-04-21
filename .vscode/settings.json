@@ -17,7 +17,8 @@
         "secrets.h": "c",
         "system_error": "cpp",
         "esp_tls.h": "c",
-        "mqtt_manager.h": "c"
+        "mqtt_manager.h": "c",
+        "freertos.h": "c"
     },
     "idf.portWin": "COM9"
 }

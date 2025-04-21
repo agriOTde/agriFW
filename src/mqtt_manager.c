@@ -6,13 +6,17 @@
 #include "sharedData.h"
 #include "secrets.h"  // AWS certs & keys
 
-#define LOG_LOCAL_LEVEL ESP_LOG_ERROR
+// #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
 
 static const char *TAG = "MQTT";
+static const char *MQTT_PARSE = "MQTT Payload";
+
 static esp_mqtt_client_handle_t client;  // MQTT client handle
 static bool mqtt_connected = false;
 static const char **subscribed_topics = NULL;
 static int num_subscribed_topics = 0;
+
+
 
 // MQTT event handler
 static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data) {
@@ -27,7 +31,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
             for (int i = 0; i < num_subscribed_topics; ++i) {
                 int msg_id = esp_mqtt_client_subscribe(client, subscribed_topics[i], 0);
-                ESP_LOGI(TAG, "Subscribed to topic: %s, msg_id: %d", subscribed_topics[i], msg_id);
+                // ESP_LOGI(TAG, "Subscribed to topic: %s, msg_id: %d", subscribed_topics[i], msg_id);
             }
 
             break;
@@ -36,7 +40,7 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             mqtt_connected = false;
             break;
         case MQTT_EVENT_DATA:{
-            ESP_LOGI(TAG, "Received message on topic %s: %.*s", event->topic, event->data_len, event->data);
+            // ESP_LOGI(TAG, "Received message on topic %s: %.*s", event->topic, event->data_len, event->data);
                 // Copy topic and data into null-terminated strings
                 
             char topic[event->topic_len + 1];
@@ -46,16 +50,14 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             memcpy(data, event->data, event->data_len);
             data[event->data_len] = '\0';
 
-            // Update shared data based on topic
-            if (strcmp(topic, MQTT_TOPIC_SUB) == 0) {
-                bool value = (strcmp(data, "1") == 0 || strcasecmp(data, "true") == 0);
-
-                // Block Subsrcibed data for recording
-                if (xSemaphoreTake(shared_sub_data_mutex, pdMS_TO_TICKS(100))) {
-                    shared_sub_data.motor_command = value;
-                    xSemaphoreGive(shared_sub_data_mutex);
-                }
+            if (strcmp(topic, MQTT_TOPIC_MOTOR_SCHEDULE) == 0) {
+                // Parse JSON for schedule (esp32/motor/schedule)
+                parseScheduleJson(data);
+            } else if (strcmp(topic, MQTT_TOPIC_MOTOR_CMD) == 0) {
+                // Parse JSON for command (esp32/motor/command)
+                parseCommandJson(data);
             }
+
             break;
             }
         case MQTT_EVENT_PUBLISHED:
@@ -74,7 +76,8 @@ void mqtt_init(const char **topics, int num_topics) {
 
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = RPI_MQTT_BROKER_URI,
-        .network.timeout_ms = 5000
+        .network.timeout_ms = 5000,
+        .task.stack_size = 8192
     };
 
     client = esp_mqtt_client_init(&mqtt_cfg);
@@ -96,5 +99,90 @@ void mqtt_reconnect(void) {
         esp_mqtt_client_stop(client);
         esp_mqtt_client_start(client);
         ESP_LOGI(TAG, "MQTT client restarted after Wi-Fi reconnect");
+    }
+}
+
+void parseScheduleJson(const char *jsonBuffer) {
+    // Parse the JSON string into a cJSON object
+    cJSON *json = cJSON_Parse(jsonBuffer);
+    if (json == NULL) {
+        ESP_LOGE(MQTT_PARSE, "Error parsing JSON: %s", jsonBuffer);
+        return;
+    }
+
+    // Extract values from the JSON object
+    cJSON *duration = cJSON_GetObjectItemCaseSensitive(json, "Duration");
+    cJSON *timePeriod = cJSON_GetObjectItemCaseSensitive(json, "TimePeriod");
+
+    if (cJSON_IsNumber(duration)) {
+        ESP_LOGI(MQTT_PARSE, "Received Duration: %d", duration->valueint);
+    }
+    if (cJSON_IsNumber(timePeriod)) {
+        ESP_LOGI(MQTT_PARSE, "Received TimePeriod: %d", timePeriod->valueint);
+    }
+
+    // Clean up the cJSON object
+    cJSON_Delete(json);
+
+    // Update shared data (ensure mutex is taken to safely modify shared data)
+    if (cJSON_IsNumber(duration) && cJSON_IsNumber(timePeriod)) {
+        if (xSemaphoreTake(shared_sub_data_mutex, pdMS_TO_TICKS(100))==pdTRUE) {
+            shared_sub_data.motor_duration = duration->valueint;
+            shared_sub_data.motor_timePeriod = timePeriod->valueint;
+            xSemaphoreGive(shared_sub_data_mutex);
+        } else {
+            ESP_LOGE(MQTT_PARSE, "Parse Schedule SEMAPHORE DID NOT YIELD");
+        }
+    }
+    else {
+        ESP_LOGE(MQTT_PARSE, "Invalid or missing Duration/TimePeriod in JSON");
+    }
+}
+
+void parseCommandJson(const char *jsonBuffer) {
+    // Parse the JSON string into a cJSON object
+    cJSON *json = cJSON_Parse(jsonBuffer);
+    if (json == NULL) {
+        ESP_LOGE(MQTT_PARSE, "Error parsing JSON: %s", jsonBuffer);
+        return;
+    }
+
+    // Extract the "cmd" item from the JSON object
+    cJSON *cmd = cJSON_GetObjectItemCaseSensitive(json, "cmd");
+
+    // Check if the cmd is a valid string
+    if (cJSON_IsNumber(cmd)) {
+        ESP_LOGI(MQTT_PARSE, "Received Command: %d", cmd->valueint);
+    } else {
+        ESP_LOGE(MQTT_PARSE, "Invalid command in JSON, 'cmd' is not a number or is NULL.");
+        cJSON_Delete(json);
+        return;
+    }
+
+    // Clean up the cJSON object
+    cJSON_Delete(json);
+
+    // Try to update the shared data (ensure mutex is taken to safely modify shared data)
+    if (cJSON_IsNumber(cmd)){
+            if (xSemaphoreTake(shared_sub_data_mutex, portMAX_DELAY) == pdTRUE) {
+            ESP_LOGE(MQTT_PARSE, "SEMAPHORE YIELDED");
+
+            // Update the shared data based on the command
+            if ((cmd->valueint) == 1) {
+                ESP_LOGI(MQTT_PARSE, "Setting motor_command to true");
+                shared_sub_data.motor_command = true;
+            } else if ((cmd->valueint) == 0) {
+                ESP_LOGI(MQTT_PARSE, "Setting motor_command to false");
+                shared_sub_data.motor_command = false;
+            } else {
+                ESP_LOGE(MQTT_PARSE, "Received unknown command: %d", cmd->valueint);
+            }
+            // Release the semaphore
+            xSemaphoreGive(shared_sub_data_mutex);
+        } else {
+            ESP_LOGE(MQTT_PARSE, "Parse CMD SEMAPHORE DID NOT YIELD");
+        }
+    } else {
+        ESP_LOGE(MQTT_PARSE, "Invalid or missing Command in JSON");
     }
 }
