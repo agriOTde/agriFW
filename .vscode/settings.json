@@ -18,7 +18,12 @@
         "system_error": "cpp",
         "esp_tls.h": "c",
         "mqtt_manager.h": "c",
-        "freertos.h": "c"
+        "freertos.h": "c",
+        "esp_err.h": "c",
+        "mqtt_client.h": "c",
+        "event_groups.h": "c",
+        "esp_netif.h": "c",
+        "string.h": "c"
     },
     "idf.portWin": "COM9"
 }

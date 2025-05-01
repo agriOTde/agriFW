@@ -8,8 +8,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
-#define WIFI_SSID      "TP-Link_75CD"      // Change this to your Wi-Fi SSID
-#define WIFI_PASS      "63331776"  // Change this to your Wi-Fi Password
+
 #define MAX_RETRIES    5
 
 // Event group for Wi-Fi connection

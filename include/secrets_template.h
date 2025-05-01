@@ -1,3 +1,7 @@
+#define WIFI_SSID      "***************"      // Change this to your Wi-Fi SSID
+#define WIFI_PASS      "***************"  // Change this to your Wi-Fi Password
+#define RPI_MQTT_BROKER_URI "mqtt://************:1883"
+
 // Amazon Root CA certificate
 const char *aws_root_ca_pem = \
 "-----BEGIN CERTIFICATE-----\n"

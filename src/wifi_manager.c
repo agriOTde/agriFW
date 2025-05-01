@@ -1,5 +1,6 @@
 #include "wifi_manager.h"
 #include "mqtt_manager.h"
+#include "secrets.h"
 #include "esp_netif.h"
 #include <string.h>
 

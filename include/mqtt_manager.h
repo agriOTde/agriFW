@@ -11,7 +11,8 @@ extern "C" {
 #include "esp_err.h"
 
 #define MQTT_BROKER_URI "mqtts://aeti3itrm7uta-ats.iot.eu-north-1.amazonaws.com:8883"
-#define RPI_MQTT_BROKER_URI "mqtt://192.168.1.100:1884"
+#define RPI_MQTT_BROKER_URI "mqtt://10.144.0.143:1883"
+
 
 
 // Initialize MQTT

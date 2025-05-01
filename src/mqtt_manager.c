@@ -4,7 +4,6 @@
 #include "esp_crt_bundle.h"
 #include "mqtt_client.h"
 #include "sharedData.h"
-#include "secrets.h"  // AWS certs & keys
 
 // #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
 
