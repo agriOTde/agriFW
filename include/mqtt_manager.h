@@ -26,6 +26,7 @@ void mqtt_reconnect(void);
 
 void parseScheduleJson(const char *jsonBuffer);
 void parseCommandJson(const char *jsonBuffer);
+void parseOTACommandJson(const char *jsonBuffer);
 
 #ifdef __cplusplus
 }

@@ -11,5 +11,8 @@ shared_sub_data_t shared_sub_data = {
 
 SemaphoreHandle_t shared_sub_data_mutex = NULL;
 SemaphoreHandle_t data_publish_mutex = NULL;
+SemaphoreHandle_t ota_shared_mutex = NULL;
+
+
 
 

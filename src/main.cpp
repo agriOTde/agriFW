@@ -5,6 +5,7 @@
 #include "freertos/semphr.h"
 #include "esp_task_wdt.h"
 #include "mqtt_manager.h"
+#include "OTA_manager.h"
 #include "sharedData.h"
 #include "generic_uart_driver.h"
 #include "sht31.h"
@@ -25,12 +26,18 @@
 #define I2C_MASTER_TX_BUF_DISABLE  0 /*!< I2C disable TX buffer */
 #define I2C_MASTER_RX_BUF_DISABLE  0 /*!< I2C disable RX buffer */
 #define MOTOR_PIN GPIO_NUM_12 /*!< GPIO number for Motor */
-#define MQTT_PUBLISH_DELAY 2000 /*!< GPIO number for Motor */
+
+// Delay Presets
+
+#define MQTT_PUBLISH_DELAY 180000 /*!< GPIO number for Motor */
+#define OTA_CHECK_DELAY 60000 /*!< GPIO number for Motor */
 
 
 const char *subscribe_topics[] = {
     MQTT_TOPIC_MOTOR_CMD,
-    MQTT_TOPIC_MOTOR_SCHEDULE
+    MQTT_TOPIC_MOTOR_SCHEDULE,
+    MQTT_TOPIC_MOTOR_SCHEDULE,
+    MQTT_TOPIC_OTA_CMD
 };
 
 // #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
@@ -48,12 +55,10 @@ extern "C" {
 #endif
 
 // TAGS for logging
-static const char *WIFI_TAG = "wifi station";
-static const char *JSON_TAG = "JSON object";
 static const char *SHT_TAG = "SHT Ping";
 static const char *PH_TAG = "PH sensor";
 static const char *MAIN_TAG = "MAIN";
-static const char *PUB_TAG = "Publish topic";
+static const char *OTA_TAG = "OTA Update";
 static const char *MQTT_TAG = "MQTT";
 static const char *MOTOR_TAG = "Motor";
 
@@ -65,6 +70,7 @@ extern "C"
 
 // ################# Function Declarations ####################
 // Tasks
+void ota_update_task(void *arg);
 void ping_sht_task(void *arg);
 void ping_ph_task(void *arg);
 void post_mqtt_task(void *arg);
@@ -75,6 +81,7 @@ static esp_err_t i2c_master_init();
 void read_logs_from_nvs();
 void log_error_to_nvs(const char *error_message);
 int custom_log_handler(const char *format, va_list args);
+bool ota_flag = true;
 
 // ############################################################
 
@@ -116,16 +123,17 @@ void app_main() {
     // Initialize Wi-Fi
     wifi_init_sta();
 
+    // Create shared semaphore
+    data_publish_mutex = xSemaphoreCreateMutex();
+    shared_sub_data_mutex = xSemaphoreCreateMutex();
+    ota_shared_mutex = xSemaphoreCreateMutex();
+
     // Init MQTT Client
     mqtt_init(subscribe_topics, sizeof(subscribe_topics)/sizeof(subscribe_topics[0]));
 
 
     // Set DNS and test DNS resolution
     set_dns();
-
-    // Create shared semaphore
-    data_publish_mutex = xSemaphoreCreateMutex();
-    shared_sub_data_mutex = xSemaphoreCreateMutex();
 
     // Initialize I2C
     ESP_LOGI(MAIN_TAG, "Initializing I2C...");
@@ -139,6 +147,8 @@ void app_main() {
     xTaskCreatePinnedToCore(ping_ph_task, "Pinging PH sensor", 4096, NULL, 4, &myTaskHandle, 1);
     xTaskCreatePinnedToCore(ping_sht_task, "posting SHT31", 4096, NULL, 5, &myTaskHandle, 1);
     xTaskCreatePinnedToCore(post_mqtt_task, "posting MQTT Data", 4096, NULL, 6, &myTaskHandle, 1);
+    xTaskCreatePinnedToCore(ota_update_task, "OTA Update", 8192, NULL, 7, &myTaskHandle, 0);
+
 }
 
 static esp_err_t i2c_master_init() {
@@ -441,6 +451,149 @@ void drive_motor_task(void *arg) {
     // Task cleanup (shouldn't reach here unless task is deleted)
     vTaskDelete(NULL);
 }
+
+void ota_update_task(void *arg) {
+    ESP_LOGI(OTA_TAG, "OTA Update Task Started");
+
+    wifi_ap_record_t ap_info;
+    bool ota_flag = false;
+    const int max_retries = 30;
+    int retry_count = 0;
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(OTA_CHECK_DELAY));
+    
+        ESP_LOGI(OTA_TAG, "OTA TASK BREAKPOINT");
+    
+        if (get_ota_flag(&ota_flag) != ESP_OK) {
+            ESP_LOGE(OTA_TAG, "Failed to read OTA flag from NVS. Skipping this cycle.");
+            // continue; // Allow task to retry later
+        }
+    
+        if (xSemaphoreTake(ota_shared_mutex, portMAX_DELAY) == pdTRUE) {
+            ota_flag = shared_ota_data.update_cmd;
+            xSemaphoreGive(ota_shared_mutex);
+
+            ESP_LOGI(OTA_TAG, "ota_flag = %d",ota_flag);
+
+    
+            if (!ota_flag) {
+                ESP_LOGI(OTA_TAG, "OTA flag is false. Skipping OTA update.");
+                continue;
+            }
+    
+            retry_count = 0;  // Reset retry counter
+            while (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+                ESP_LOGW(OTA_TAG, "Wi-Fi not connected, retrying... (%d/%d)", retry_count + 1, max_retries);
+                retry_count++;
+                if (retry_count >= max_retries) {
+                    ESP_LOGE(OTA_TAG, "Wi-Fi connection failed after max retries. Skipping OTA.");
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+    
+            if (retry_count < max_retries) {
+                if (ota_update()) {
+
+                    ESP_LOGI(OTA_TAG, "OTA update successful!");
+                    set_ota_flag(false); //Update NVS Memory
+
+                    xSemaphoreTake(ota_shared_mutex, portMAX_DELAY);
+                    shared_ota_data.update_cmd = false;
+                    xSemaphoreGive(ota_shared_mutex);
+
+                    // Send acknowledgment to broker
+                    cJSON *ota_ack_data = cJSON_CreateObject();
+                    cJSON_AddStringToObject(ota_ack_data, "OTA_Status", "OTA Updated!");
+                    const char *ota_ack_json_string = cJSON_Print(ota_ack_data);
+
+                    if (mqtt_publish(MQTT_TOPIC_OTA_ACK, ota_ack_json_string) != ESP_OK) {
+                        ESP_LOGE(MOTOR_TAG, "Failed to publish OTA Update acknowledgment");
+                    } else {
+                        ESP_LOGI(MOTOR_TAG, "Published OTA Update acknowledgment");
+                    }
+
+                    // Free memory used by JSON string and object
+                    free((void *)ota_ack_json_string);
+                    cJSON_Delete(ota_ack_data);
+
+                    // Restart ESP
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                    esp_restart();
+
+                } else {
+                    ESP_LOGE(OTA_TAG, "OTA update failed.");
+
+                    // Send acknowledgment to broker
+                    cJSON *ota_ack_data = cJSON_CreateObject();
+                    cJSON_AddStringToObject(ota_ack_data, "OTA_Status", "OTA Update Failed!");
+                    const char *ota_ack_json_string = cJSON_Print(ota_ack_data);
+
+                    if (mqtt_publish(MQTT_TOPIC_OTA_ACK, ota_ack_json_string) != ESP_OK) {
+                        ESP_LOGE(MOTOR_TAG, "Failed to publish OTA Update FAIL acknowledgment");
+                    } else {
+                        ESP_LOGI(MOTOR_TAG, "Published OTA Update FAIL acknowledgment");
+                    }
+
+                    // Free memory used by JSON string and object
+                    free((void *)ota_ack_json_string);
+                    cJSON_Delete(ota_ack_data);
+                }
+            }
+    
+            xSemaphoreGive(ota_shared_mutex);
+    
+        } else {
+            ESP_LOGE(OTA_TAG, "Failed to take OTA semaphore.");
+        }
+    }
+    
+    vTaskDelete(NULL);
+}
+
+
+// void ota_update_task(void *arg){
+
+//     ESP_LOGI(OTA_TAG, "OTA Update Task Started");
+
+//     wifi_ap_record_t ap_info;
+//     const int max_retries = 30;  // total ~30 seconds
+//     int retry_count = 0;
+
+    
+//     if(get_ota_flag(&ota_flag) != ESP_OK){
+//         ESP_LOGE(OTA_TAG, "OTA Flag not logged yet!");
+//     }
+//     while(ota_flag)
+//     {
+//     // Retry loop for Wi-Fi
+//     while (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
+//         ESP_LOGW(OTA_TAG, "Wi-Fi not connected, retrying... (%d/%d)", retry_count + 1, max_retries);
+//         retry_count++;
+//         if (retry_count >= max_retries) {
+//             ESP_LOGE(OTA_TAG, "Failed to connect to Wi-Fi after %d retries. Aborting OTA.", max_retries);
+//             vTaskDelete(NULL);
+//         }
+//         vTaskDelay(pdMS_TO_TICKS(1000));  // Wait 1 second before retry
+//     }
+
+    
+//         if(ota_update()){
+//         ESP_LOGE(OTA_TAG, "OTA Successfull!");
+//         vTaskDelay(pdMS_TO_TICKS(2000));
+//         ota_flag = false;
+//         set_ota_flag(ota_successful);  // Save the result to NVS
+//         esp_restart();
+        
+//         } else {
+//         ESP_LOGE(OTA_TAG, "OTA Failed, Retrying...");
+//         }
+//     }
+    
+//     // Task ends after OTA
+//     vTaskDelete(NULL);
+// }
 
 void log_error_to_nvs(const char *error_message) {
     nvs_handle_t my_handle;
