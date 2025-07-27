@@ -22,6 +22,8 @@ Repo for the FW of the Agri Edge device capable of sending Temp and Humidity dat
 
 ### Future Work
 
+* Saving of all crucial paramters in NVS
+* actual ack implmentation to commands
 * MQTT TLS implementation
 * Sleep and other power saving routines.
 * Saving of PKI stuff in eeprom

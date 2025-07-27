@@ -4,11 +4,14 @@
 #include "esp_crt_bundle.h"
 #include "mqtt_client.h"
 #include "sharedData.h"
+#include "nvs_flash.h"
+#include "nvs.h"
 
 // #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
 
 static const char *TAG = "MQTT";
 static const char *MQTT_PARSE = "MQTT Payload";
+static const char *NVS_WRITER = "NVS_WRITER";
 
 static esp_mqtt_client_handle_t client;  // MQTT client handle
 static bool mqtt_connected = false;
@@ -132,6 +135,10 @@ void parseScheduleJson(const char *jsonBuffer) {
             shared_sub_data.motor_duration = duration->valueint;
             shared_sub_data.motor_timePeriod = timePeriod->valueint;
             xSemaphoreGive(shared_sub_data_mutex);
+            uint32_t tp = (uint32_t)timePeriod->valueint;
+            store_values("schedule","timeperiod", TYPE_U32, &tp);
+            uint32_t dur = (uint32_t)duration->valueint;
+            store_values("schedule","duration", TYPE_U32, &dur);
         } else {
             ESP_LOGE(MQTT_PARSE, "Parse Schedule SEMAPHORE DID NOT YIELD");
         }
@@ -173,10 +180,17 @@ void parseCommandJson(const char *jsonBuffer) {
             if ((cmd->valueint) == 1) {
                 ESP_LOGI(MQTT_PARSE, "Setting motor_command to true");
                 shared_sub_data.motor_command = true;
+                int m_cmd = -2;
+                store_values("schedule","command", TYPE_I8,&m_cmd);
             } else if ((cmd->valueint) == 0) {
                 ESP_LOGI(MQTT_PARSE, "Setting motor_command to false");
                 shared_sub_data.motor_command = false;
-            } else {
+            } else if ((cmd->valueint) == -1) {
+                ESP_LOGI(MQTT_PARSE, "Setting motor_command to Scheduled");
+                shared_sub_data.motor_command = -1;                
+                store_values("schedule","command", TYPE_I8,&cmd->valueint);
+
+            }else {
                 ESP_LOGE(MQTT_PARSE, "Received unknown command: %d", cmd->valueint);
             }
             // Release the semaphore
@@ -234,5 +248,53 @@ void parseOTACommandJson(const char *jsonBuffer) {
         }
     } else {
         ESP_LOGE(MQTT_PARSE, "Invalid or missing Command in JSON");
+    }
+}
+
+void store_values(char *nvs_namespace, char *handle, ValueType _type, const void* val_ptr){
+    nvs_handle_t nvs_handle;
+    esp_err_t nvs_err;
+    nvs_err = nvs_open(nvs_namespace, NVS_READWRITE, &nvs_handle);
+    if (nvs_err != ESP_OK) {
+        printf("Error opening NVS!\n");
+        return;
+    }
+    switch(_type){
+        case TYPE_U16: {
+            uint16_t val = *(uint16_t *)val_ptr;
+            nvs_err = nvs_set_u16(nvs_handle, handle, val); 
+            if (nvs_err == ESP_OK) {
+                nvs_commit(nvs_handle);  // save to flash
+                ESP_LOGI(NVS_WRITER, "Stored value of %s = %u in namespace = %s ", handle, val, nvs_namespace);
+            } else {
+                ESP_LOGE(NVS_WRITER, "Failed to store value");
+            }
+            break;
+        }
+        case TYPE_U32: {
+            uint32_t val = *(uint32_t *)val_ptr;
+            nvs_err = nvs_set_u32(nvs_handle, handle, val); 
+            if (nvs_err == ESP_OK) {
+                nvs_commit(nvs_handle);  // save to flash
+                ESP_LOGI(NVS_WRITER, "Stored value of %s = %lu in namespace = %s ", handle, val, nvs_namespace);
+            } else {
+                ESP_LOGE(NVS_WRITER, "Failed to store value");
+            }
+            break;
+        }
+        case TYPE_I8: {
+            int8_t val = *(int8_t *)val_ptr;
+            nvs_err = nvs_set_i8(nvs_handle, handle, val); 
+            if (nvs_err == ESP_OK) {
+                nvs_commit(nvs_handle);  // save to flash
+                ESP_LOGI(NVS_WRITER, "Stored value of %s = %d in namespace = %s ", handle, val, nvs_namespace);
+            } else {
+                ESP_LOGE(NVS_WRITER, "Failed to store value");
+            }
+            break;
+        }
+        default:
+            ESP_LOGW(NVS_WRITER, "Unhandled type");
+        break;
     }
 }

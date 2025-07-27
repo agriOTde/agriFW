@@ -13,13 +13,26 @@
 #define MQTT_TOPIC_OTA_CMD "esp32/ota/command"
 #define MQTT_TOPIC_OTA_ACK "esp32/ota/ack"
 
+#define DEFAULT_MOTOR_DURATION 5000
+#define DEFAULT_MOTOR_TIMEPERIOD 2*60*1000
+
+typedef enum {
+    TYPE_U8,
+    TYPE_I8,
+    TYPE_U16,
+    TYPE_I16,
+    TYPE_U32,
+    TYPE_I32
+} ValueType;
 
 typedef struct {
-    bool motor_command;
+    int8_t motor_command;
     uint32_t motor_timePeriod;
-    uint16_t motor_duration;
+    uint32_t motor_duration;
     // Add other flags here if needed
 } shared_sub_data_t;
+
+
 
 typedef struct {
     bool update_cmd;;

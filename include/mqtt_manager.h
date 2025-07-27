@@ -9,24 +9,20 @@ extern "C" {
 #include "esp_log.h"
 #include "mqtt_client.h"
 #include "esp_err.h"
+#include "sharedData.h"
 
-#define MQTT_BROKER_URI "mqtts://aeti3itrm7uta-ats.iot.eu-north-1.amazonaws.com:8883"
-#define RPI_MQTT_BROKER_URI "mqtt://10.144.0.143:1883"
+#define RPI_MQTT_BROKER_URI "mqtt://10.144.0.143:1884"
 
 
+//Methods
 
-// Initialize MQTT
 void mqtt_init(const char **topics, int num_topics);
-
-// Publish a message
 uint16_t mqtt_publish(const char *topic, const char *message);
-
-// Reconnet MQTT
 void mqtt_reconnect(void);
-
 void parseScheduleJson(const char *jsonBuffer);
 void parseCommandJson(const char *jsonBuffer);
 void parseOTACommandJson(const char *jsonBuffer);
+void store_values(char *nvs_namespace, char *handle, ValueType _type, const void* val_ptr);
 
 #ifdef __cplusplus
 }

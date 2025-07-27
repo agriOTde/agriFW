@@ -29,7 +29,12 @@
         "esp_http_client.h": "c",
         "esp_ota_ops.h": "c",
         "ota_manager.h": "c",
-        "shareddata.h": "c"
+        "shareddata.h": "c",
+        "semphr.h": "c",
+        "functional": "c",
+        "tuple": "c",
+        "type_traits": "c",
+        "utility": "c"
     },
-    "idf.portWin": "COM9"
+    "idf.portWin": "COM12"
 }

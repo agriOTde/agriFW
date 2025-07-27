@@ -3,9 +3,9 @@
 #include "string.h"
 
 shared_sub_data_t shared_sub_data = {
-    .motor_command = false,
-    .motor_duration = 5000,
-    .motor_timePeriod = 0
+    .motor_command = 0,
+    .motor_duration = DEFAULT_MOTOR_DURATION,
+    .motor_timePeriod = DEFAULT_MOTOR_TIMEPERIOD
 
 };
 

@@ -3,6 +3,7 @@
 #include <freertos/task.h>
 #include "freertos/event_groups.h"
 #include "freertos/semphr.h"
+#include "freertos/timers.h"
 #include "esp_task_wdt.h"
 #include "mqtt_manager.h"
 #include "OTA_manager.h"
@@ -25,13 +26,23 @@
 #define I2C_MASTER_FREQ_HZ   100000 /*!< I2C clock frequency */
 #define I2C_MASTER_TX_BUF_DISABLE  0 /*!< I2C disable TX buffer */
 #define I2C_MASTER_RX_BUF_DISABLE  0 /*!< I2C disable RX buffer */
+
+
+// Motor Related
 #define MOTOR_PIN GPIO_NUM_12 /*!< GPIO number for Motor */
+typedef struct {
+    float humidity_snapshot;
+    uint16_t duration;
+} MotorTimerContext;
+
+
 
 // Delay Presets
-
 #define MQTT_PUBLISH_DELAY 180000 /*!< GPIO number for Motor */
 #define OTA_CHECK_DELAY 60000 /*!< GPIO number for Motor */
 
+//Constraint Presets
+#define HUMID_CONSTRAINT 25.0
 
 const char *subscribe_topics[] = {
     MQTT_TOPIC_MOTOR_CMD,
@@ -61,9 +72,36 @@ static const char *MAIN_TAG = "MAIN";
 static const char *OTA_TAG = "OTA Update";
 static const char *MQTT_TAG = "MQTT";
 static const char *MOTOR_TAG = "Motor";
+static const char* NVS_READER_TAG = "NVS_READER";
 
+
+//Handle for all tasks
 TaskHandle_t myTaskHandle = NULL;
-sensor_data_t shared_data;
+//Handle for Motor Worker Task 
+TaskHandle_t motor_worker_task_handle = NULL;
+
+//Predefined Values for Data
+sensor_data_t shared_data{
+    0,       // temperature;
+    0,       // humidity;  
+    50,      // s_ph_value;  
+    0,       // s_temp_value;  
+    0,       // s_hum_value;  
+    false    // new_data_ready;     
+};
+
+// All NVS namespaces and their keys
+#define NS_COUNT 1
+#define MAX_KEYS_PER_NS 3   
+const char* namespaces[NS_COUNT] = {
+    "schedule"
+    };
+    
+const char* all_keys[NS_COUNT][MAX_KEYS_PER_NS] = {{"timeperiod", "duration", "command"}};
+
+const int key_counts[NS_COUNT] = {
+3};
+
 
 extern "C"
 { 
@@ -75,12 +113,32 @@ void ping_sht_task(void *arg);
 void ping_ph_task(void *arg);
 void post_mqtt_task(void *arg);
 void drive_motor_task(void *arg);
+void motor_worker_task(void *arg);
 
 //other
 static esp_err_t i2c_master_init();
-void read_logs_from_nvs();
+void read_all_nvs_values(const char* namespaces[NS_COUNT],
+     const char* keys[NS_COUNT][MAX_KEYS_PER_NS],
+      const int key_counts[],
+       int ns_count);
+// uint32_t read_nvs_value(const char* namespaces[NS_COUNT], 
+//     const char* keys[NS_COUNT][MAX_KEYS_PER_NS], 
+//     const int key_counts[], 
+//     int ns_count,
+//     const char *ns_to_read,
+//     const char *key_to_read);
+esp_err_t read_nvs_value(const char* namespaces[NS_COUNT], 
+    const char* keys[NS_COUNT][MAX_KEYS_PER_NS], 
+    const int key_counts[], 
+    int ns_count,
+    const char *ns_to_read,
+    const char *key_to_read,
+    ValueType _type,
+    void *out_val);
 void log_error_to_nvs(const char *error_message);
 int custom_log_handler(const char *format, va_list args);
+void motor_timer_callback(TimerHandle_t xTimer);
+static TimerHandle_t motor_timer = NULL;
 bool ota_flag = true;
 
 // ############################################################
@@ -118,15 +176,39 @@ void app_main() {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
-    read_logs_from_nvs(); // Read Stored Error Logs
+    // read_all_nvs_values(namespaces, all_keys, key_counts, NS_COUNT);
 
-    // Initialize Wi-Fi
-    wifi_init_sta();
-
+    
     // Create shared semaphore
     data_publish_mutex = xSemaphoreCreateMutex();
     shared_sub_data_mutex = xSemaphoreCreateMutex();
     ota_shared_mutex = xSemaphoreCreateMutex();
+
+    if (xSemaphoreTake(shared_sub_data_mutex, portMAX_DELAY) == pdTRUE) {
+
+        if(read_nvs_value(namespaces, all_keys, key_counts, NS_COUNT,"schedule","duration", TYPE_U32, &shared_sub_data.motor_duration) != ESP_OK)
+            ESP_LOGE(MAIN_TAG, "Failed to read duration from NVS!");
+        else{
+            ESP_LOGI(MAIN_TAG, "duration = %lu",shared_sub_data.motor_duration);
+                
+        }
+        if(read_nvs_value(namespaces, all_keys, key_counts, NS_COUNT,"schedule","timeperiod", TYPE_U32, &shared_sub_data.motor_timePeriod) != ESP_OK)
+            ESP_LOGE(MAIN_TAG, "Failed to read timeperiod from NVS!");
+        else
+            ESP_LOGI(MAIN_TAG, "Timeperiod = %lu",shared_sub_data.motor_timePeriod);
+        if(read_nvs_value(namespaces, all_keys, key_counts, NS_COUNT,"schedule","command", TYPE_I8, &shared_sub_data.motor_command) != ESP_OK)
+            ESP_LOGE(MAIN_TAG, "Failed to read command from NVS!");
+        else
+            ESP_LOGI(MAIN_TAG, "Motor Command = %d",shared_sub_data.motor_command);
+
+        xSemaphoreGive(shared_sub_data_mutex); 
+    } else {
+        ESP_LOGE(MAIN_TAG, "Failed to read values from NVS!");
+    }
+
+
+    // Initialize Wi-Fi
+    wifi_init_sta();
 
     // Init MQTT Client
     mqtt_init(subscribe_topics, sizeof(subscribe_topics)/sizeof(subscribe_topics[0]));
@@ -146,8 +228,8 @@ void app_main() {
     xTaskCreatePinnedToCore(drive_motor_task, "Driving Motor", 4096, NULL, 3, &myTaskHandle, 0);
     xTaskCreatePinnedToCore(ping_ph_task, "Pinging PH sensor", 4096, NULL, 4, &myTaskHandle, 1);
     xTaskCreatePinnedToCore(ping_sht_task, "posting SHT31", 4096, NULL, 5, &myTaskHandle, 1);
-    xTaskCreatePinnedToCore(post_mqtt_task, "posting MQTT Data", 4096, NULL, 6, &myTaskHandle, 1);
-    xTaskCreatePinnedToCore(ota_update_task, "OTA Update", 8192, NULL, 7, &myTaskHandle, 0);
+    // xTaskCreatePinnedToCore(post_mqtt_task, "posting MQTT Data", 4096, NULL, 6, &myTaskHandle, 1);
+    // xTaskCreatePinnedToCore(ota_update_task, "OTA Update", 8192, NULL, 7, &myTaskHandle, 0);
 
 }
 
@@ -177,9 +259,17 @@ static esp_err_t i2c_master_init() {
 
 void ping_ph_task(void *arg){
 
+    // #define FRAME_READ_HT_EC_PH   {0x01, 0x03, 0x00, 0x00, 0x00, 0x04, 0x44, 0x09}
+    // #define FRAME_READ_NPK_2  {0x02, 0x03, 0x00, 0x1E, 0x00, 0x03, 0x65, 0xFE}
+    // #define FRAME_READ_first  {0x02, 0x03, 0x00, 0x00, 0x00, 0x01, 0xF9, 0x85}
+    // #define FRAME_ENQ_SLAVE_ID    {0xFF, 0x03, 0x07, 0xD0, 0x00, 0x01, 0x91, 0x59}
+    // #define FRAME_SET_SLAVE_ID_2  {0x02, 0x06, 0x07, 0xD0, 0x00, 0x01, 0xB8, 0xB8}
+    // #define FRAME_SET_BAUD_9600   {0x01, 0x06, 0x07, 0xD1, 0x00, 0x02, 0x59, 0x46}
+
     uint8_t REQ_BYTE[] = {0x01, 0x03, 0x00, 0x00, 0x00, 0x04, 0x44, 0x09};
+    uint8_t REQ_BYTE_2[] = {0x02, 0x03, 0x00, 0x1E, 0x00, 0x03, 0x65, 0xFE};
     uint8_t rx_buf[256];
-    uint16_t humidity, temperature, pH;
+    uint16_t humidity, temperature, pH, slaveID, N, P, K;
     // UART configuration
     uart_device_config_t uart_config = {
         .uart_port = UART_NUM_2,
@@ -204,14 +294,13 @@ void ping_ph_task(void *arg){
         } else {
             ESP_LOGE(PH_TAG,"Sensor Ping Failed!\n");
         }
-        // vTaskDelay(pdMS_TO_TICKS(1000));
         uint8_t bytes_received = uart_device_receive(UART_NUM_2, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(5000));
 
         if (bytes_received > 0) {
-            ESP_LOGI(PH_TAG, "Bytes = ");
-            for(uint8_t i=0; i<12; i++){
-                ESP_LOGI(PH_TAG, "0x%02X", rx_buf[i]);
-            }
+            // ESP_LOGI(PH_TAG, "Bytes = ");
+            // for(uint8_t i=0; i<12; i++){
+            //     ESP_LOGI(PH_TAG, "0x%02X", rx_buf[i]);
+            // }
             // Example of reading data from the response frame
             humidity = (rx_buf[3] << 8) | rx_buf[4];  // Combine low and high bytes for humidity
             temperature = (rx_buf[5] << 8) | rx_buf[6];  // Combine low and high bytes for temperature
@@ -232,21 +321,49 @@ void ping_ph_task(void *arg){
             shared_data.new_data_ready = true; // Mark new data as ready
             xSemaphoreGive(data_publish_mutex); // Release lock
 
-            // Store or process the values (e.g., send to MQTT, store in NVS, etc.)
-            // cJSON *mqtt_data = cJSON_CreateObject();
-            // cJSON_AddNumberToObject(mqtt_data, "Humidity", humidity);
-            // cJSON_AddNumberToObject(mqtt_data, "Temperature", temperature);
-            // cJSON_AddNumberToObject(mqtt_data, "Conductivity", conductivity);
-            // cJSON_AddNumberToObject(mqtt_data, "pH", pH_value);
-
-            // const char *json_string = cJSON_Print(mqtt_data);
-            // if (mqtt_publish(MQTT_TOPIC_PUB, json_string) != ESP_OK) {
-            //     ESP_LOGE(MQTT_TAG, "Failed to publish data.");
-            // }
-            // free((void *)json_string);  // Free the JSON string memory
-            // cJSON_Delete(mqtt_data);
         } else {
             ESP_LOGE(PH_TAG, "Sensor Receive Failed!\n");
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+
+
+        if (uart_device_send(UART_NUM_2, REQ_BYTE_2, sizeof(REQ_BYTE_2)) == ESP_OK) {
+            
+            ESP_LOGI(PH_TAG,"Pinged NPK Sensor!\n");
+        } else {
+            ESP_LOGE(PH_TAG,"Sensor Ping Failed!\n");
+        }
+        // vTaskDelay(pdMS_TO_TICKS(1000));
+        bytes_received = uart_device_receive(UART_NUM_2, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(5000));
+
+        if (bytes_received > 0) {
+            // ESP_LOGI(PH_TAG, "Bytes = ");
+            // for(uint8_t i=0; i<12; i++){
+            //     ESP_LOGI(PH_TAG, "0x%02X", rx_buf[i]);
+            // }
+            // Example of reading data from the response frame
+            N = (rx_buf[3] << 8) | rx_buf[4];  
+            P = (rx_buf[5] << 8) | rx_buf[6];  
+            K = (rx_buf[7] << 8) | rx_buf[8]; 
+
+            // // Convert pH to a human-readable value (0.1 increment)
+            // float N_value = pH / 10.0;
+            // float P_value = humidity / 10.0;
+            // float K_value = temperature / 10.0;
+
+            ESP_LOGI(PH_TAG, "N: %d, P: %d, K: %d", N,P,K);
+
+            // // Lock shared data for writing
+            // xSemaphoreTake(data_publish_mutex, portMAX_DELAY);
+            // shared_data.s_ph_value = pH_value;
+            // shared_data.s_temp_value = temperature_value;
+            // shared_data.s_hum_value = humidity_value;
+            // shared_data.new_data_ready = true; // Mark new data as ready
+            // xSemaphoreGive(data_publish_mutex); // Release lock
+            
+        } else {
+            ESP_LOGE(PH_TAG, "NPK Sensor Receive Failed!\n");
         }
             
     }
@@ -356,101 +473,154 @@ void post_mqtt_task(void *arg){
 }
 
 void drive_motor_task(void *arg) {
+    
+    uint32_t duration = DEFAULT_MOTOR_DURATION;
+    uint32_t last_duration = 0;
+    uint32_t time_period = 0;
+    uint32_t last_timer_period_ms = 0;
+    int8_t current_motor_command = 0;
+    int8_t previous_motor_state = 0;
 
-
-    ESP_LOGI(MOTOR_TAG, "Motor");
-
-    uint16_t duration = 5000;  // Default motor running duration
-    bool current_motor_state = false;  // Default motor state (OFF)
-
-    // Configure the GPIO pin for motor control
+    // GPIO Config
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << MOTOR_PIN),  // Bitmask for the motor pin
-        .mode = GPIO_MODE_OUTPUT,             // Set as output mode
-        .pull_up_en = GPIO_PULLUP_DISABLE,   // Disable pull-up resistor
-        .pull_down_en = GPIO_PULLDOWN_DISABLE, // Disable pull-down resistor
-        .intr_type = GPIO_INTR_DISABLE       // No interrupts
+        .pin_bit_mask = (1ULL << MOTOR_PIN),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
     };
     gpio_config(&io_conf);
 
-    bool previous_motor_state = false;  // Track the previous motor state
+    // Create worker task
+    xTaskCreate(motor_worker_task, "motor_worker", 4096, NULL, 8, &motor_worker_task_handle);
 
     while (1) {
-        // Lock shared data to read motor state
+        // Access shared_sub_data safely
         if (xSemaphoreTake(shared_sub_data_mutex, portMAX_DELAY) == pdTRUE) {
-            current_motor_state = shared_sub_data.motor_command;
-            duration = shared_sub_data.motor_duration;  // Get the duration to run the motor
-        // ESP_LOGI(MOTOR_TAG, "Duration = %d, Command = %d",duration,current_motor_state);
-
-
-        // If the motor state has changed (from OFF to ON or vice versa)
-        if (current_motor_state != previous_motor_state) {
-            if (current_motor_state == true) {
-                // Start motor if not already started
-                ESP_LOGI(MOTOR_TAG, "Motor Start Command received");
-                gpio_set_level(MOTOR_PIN, 1);  // Set pin high (motor on)
-
-                // Send acknowledgment to broker
-                cJSON *ack_data = cJSON_CreateObject();
-                cJSON_AddStringToObject(ack_data, "status", "Motor Started");
-                const char *ack_json_string = cJSON_Print(ack_data);
-
-                if (mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_json_string) != ESP_OK) {
-                    ESP_LOGE(MOTOR_TAG, "Failed to publish motor start acknowledgment");
-                } else {
-                    ESP_LOGI(MOTOR_TAG, "Published motor start acknowledgment");
-                }
-
-                // Free memory used by JSON string and object
-                free((void *)ack_json_string);
-                cJSON_Delete(ack_data);
-
-                // Motor ON Duration
-                vTaskDelay(pdMS_TO_TICKS((int)duration));  // Wait for the motor to run for the specified duration
-
-                // Turn the motor off
-                gpio_set_level(MOTOR_PIN, 0);  // Set pin low (motor off)
-                ESP_LOGI(MOTOR_TAG, "Motor stopped after %d ms", duration);
-                current_motor_state = false;
-                shared_sub_data.motor_command = false;
-
-                // Send acknowledgment to broker
-                ack_data = cJSON_CreateObject();
-                cJSON_AddStringToObject(ack_data, "status", "Motor Stopped");
-                ack_json_string = cJSON_Print(ack_data);
-
-                if (mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_json_string) != ESP_OK) {
-                    ESP_LOGE(MOTOR_TAG, "Failed to publish motor stop acknowledgment");
-                } else {
-                    ESP_LOGI(MOTOR_TAG, "Published motor stop acknowledgment");
-                }
-
-                // Free memory used by JSON string and object
-                free((void *)ack_json_string);
-                cJSON_Delete(ack_data);
-
-                
-            }
-
-            // Update the previous motor state after handling the state change
-            previous_motor_state = current_motor_state;
-            }
-        
-        xSemaphoreGive(shared_sub_data_mutex);
+            current_motor_command = shared_sub_data.motor_command;
+            duration = shared_sub_data.motor_duration;
+            time_period = shared_sub_data.motor_timePeriod;
+            xSemaphoreGive(shared_sub_data_mutex);
         } else {
-            ESP_LOGW(MOTOR_TAG, "Failed to acquire semaphore. Skipping update.");
-            vTaskDelay(pdMS_TO_TICKS(1000));  // Retry after 1 second or exit early
+            vTaskDelay(pdMS_TO_TICKS(1000));
             continue;
-            
-    }
+        }
+    
+        if (current_motor_command == 1 || current_motor_command == 0) {
+            // Manual mode — clean up scheduled timer
+            if (motor_timer != NULL) {
+                xTimerStop(motor_timer, 0);
+                xTimerDelete(motor_timer, 0);
+                motor_timer = NULL;
+                last_timer_period_ms = 0;
+            }
 
-        // Add a delay before checking again for a new motor command
-        vTaskDelay(pdMS_TO_TICKS(100));  // Periodically check motor state
-    }
+            if (current_motor_command != previous_motor_state && current_motor_command == 1) {
+                gpio_set_level(MOTOR_PIN, 1);
 
-    // Task cleanup (shouldn't reach here unless task is deleted)
-    vTaskDelete(NULL);
+                cJSON *ack = cJSON_CreateObject();
+                cJSON_AddStringToObject(ack, "status", "True");
+                const char *ack_str = cJSON_Print(ack);
+                mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_str);
+                free((void *)ack_str);
+                cJSON_Delete(ack);
+
+                vTaskDelay(pdMS_TO_TICKS(duration));
+
+                gpio_set_level(MOTOR_PIN, 0);
+                ESP_LOGI(MOTOR_TAG, "Motor stopped after %lu ms (Manual)", duration);
+
+                if (xSemaphoreTake(shared_sub_data_mutex, portMAX_DELAY) == pdTRUE) {
+                    shared_sub_data.motor_command = 0;
+                    xSemaphoreGive(shared_sub_data_mutex);
+                }
+
+                ack = cJSON_CreateObject();
+                cJSON_AddStringToObject(ack, "status", "False");
+                ack_str = cJSON_Print(ack);
+                mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_str);
+                free((void *)ack_str);
+                cJSON_Delete(ack);
+            }
+
+            previous_motor_state = current_motor_command;
+        } else if (current_motor_command == -1){
+            if (motor_timer != NULL && (time_period != last_timer_period_ms || duration != last_duration)) {
+                xTimerStop(motor_timer, 0);
+                xTimerDelete(motor_timer, 0);
+                motor_timer = NULL;
+                ESP_LOGE(MOTOR_TAG, "Timer Deleted!");  
+
+            }
+
+            if (motor_timer == NULL) {
+                MotorTimerContext *ctx = (MotorTimerContext *) malloc(sizeof(MotorTimerContext));
+                ctx->duration = duration;
+                motor_timer = xTimerCreate("MotorTimer", pdMS_TO_TICKS(time_period), pdTRUE, (void *)ctx, motor_timer_callback);
+                // motor_timer = xTimerCreate("MotorTimer", pdMS_TO_TICKS(time_period), pdTRUE, (void *)ctx, motor_timer_callback);
+                ESP_LOGI(MOTOR_TAG, "New Timer Created! Timeperiod = %lu, duration = %lu ", time_period, duration);  
+                xTimerStart(motor_timer, 0);
+                last_timer_period_ms = time_period;
+                last_duration = duration;
+            }
+        } else{
+                ESP_LOGI(MOTOR_TAG, "Manual Motor Mode");  
+                continue;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
 }
+
+void motor_timer_callback(TimerHandle_t xTimer) {
+    MotorTimerContext *ctx = (MotorTimerContext *) pvTimerGetTimerID(xTimer);
+    if (ctx) {
+    xTaskNotifyGive(motor_worker_task_handle);  // Notify the worker task
+    }
+}
+
+void motor_worker_task(void *arg) {
+    float humidity = 100;
+    while (1) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);  // Wait for timer notification
+
+        MotorTimerContext *ctx = (MotorTimerContext *) pvTimerGetTimerID(motor_timer);
+
+        if (!ctx) continue;
+        if (xSemaphoreTake(data_publish_mutex, portMAX_DELAY) == pdTRUE) {
+            if(shared_data.new_data_ready){
+                humidity = shared_data.s_hum_value;
+                xSemaphoreGive(data_publish_mutex);
+                }
+            }
+        ESP_LOGI(MOTOR_TAG, "In Motor Worker Task, Humidity %.2f", humidity);
+        
+        if (humidity < HUMID_CONSTRAINT) {
+            ESP_LOGI(MOTOR_TAG, "Humidity %.2f below threshold. Activating motor.", humidity);
+            gpio_set_level(MOTOR_PIN, 1);
+            ESP_LOGI(MOTOR_TAG, "Scheduled Motor start!");
+            cJSON *ack = cJSON_CreateObject();
+            cJSON_AddStringToObject(ack, "status", "True");
+            const char *ack_str = cJSON_Print(ack);
+            mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_str);
+
+            vTaskDelay(pdMS_TO_TICKS(ctx->duration));
+            gpio_set_level(MOTOR_PIN, 0);
+            ESP_LOGI(MOTOR_TAG, "Motor stopped after scheduled run.");
+
+            // Send acknowledgment and optionally store state in NVS
+            ack = cJSON_CreateObject();
+            cJSON_AddStringToObject(ack, "status", "False");
+            ack_str = cJSON_Print(ack);
+            mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_str);
+
+            free((void *)ack_str);
+            cJSON_Delete(ack);
+        }
+    }
+}
+
+
 
 void ota_update_task(void *arg) {
     ESP_LOGI(OTA_TAG, "OTA Update Task Started");
@@ -552,49 +722,6 @@ void ota_update_task(void *arg) {
     vTaskDelete(NULL);
 }
 
-
-// void ota_update_task(void *arg){
-
-//     ESP_LOGI(OTA_TAG, "OTA Update Task Started");
-
-//     wifi_ap_record_t ap_info;
-//     const int max_retries = 30;  // total ~30 seconds
-//     int retry_count = 0;
-
-    
-//     if(get_ota_flag(&ota_flag) != ESP_OK){
-//         ESP_LOGE(OTA_TAG, "OTA Flag not logged yet!");
-//     }
-//     while(ota_flag)
-//     {
-//     // Retry loop for Wi-Fi
-//     while (esp_wifi_sta_get_ap_info(&ap_info) != ESP_OK) {
-//         ESP_LOGW(OTA_TAG, "Wi-Fi not connected, retrying... (%d/%d)", retry_count + 1, max_retries);
-//         retry_count++;
-//         if (retry_count >= max_retries) {
-//             ESP_LOGE(OTA_TAG, "Failed to connect to Wi-Fi after %d retries. Aborting OTA.", max_retries);
-//             vTaskDelete(NULL);
-//         }
-//         vTaskDelay(pdMS_TO_TICKS(1000));  // Wait 1 second before retry
-//     }
-
-    
-//         if(ota_update()){
-//         ESP_LOGE(OTA_TAG, "OTA Successfull!");
-//         vTaskDelay(pdMS_TO_TICKS(2000));
-//         ota_flag = false;
-//         set_ota_flag(ota_successful);  // Save the result to NVS
-//         esp_restart();
-        
-//         } else {
-//         ESP_LOGE(OTA_TAG, "OTA Failed, Retrying...");
-//         }
-//     }
-    
-//     // Task ends after OTA
-//     vTaskDelete(NULL);
-// }
-
 void log_error_to_nvs(const char *error_message) {
     nvs_handle_t my_handle;
     esp_err_t err = nvs_open("storage", NVS_READWRITE, &my_handle);
@@ -613,25 +740,240 @@ void log_error_to_nvs(const char *error_message) {
     }
 }
 
-void read_logs_from_nvs() {
-    nvs_handle_t my_handle;
-    esp_err_t err = nvs_open("storage", NVS_READONLY, &my_handle);
-    if (err == ESP_OK) {
-        int32_t log_index;
-        if (nvs_get_i32(my_handle, "log_index", &log_index) != ESP_OK) {
-            log_index = 0;
+void read_all_nvs_values(const char* namespaces[NS_COUNT], 
+    const char* keys[NS_COUNT][MAX_KEYS_PER_NS], 
+    const int key_counts[], 
+    int ns_count) {
+
+    for (int i = 0; i < ns_count; i++) {
+        const char* ns = namespaces[i];
+        int num_keys = key_counts[i];
+
+        if (num_keys > MAX_KEYS_PER_NS) {
+            ESP_LOGW(NVS_READER_TAG, "Skipping namespace '%s' due to too many keys", ns);
+            continue;
         }
-        for (int i = 0; i < MAX_LOGS_NVS; i++) {
-            char key[10], log_message[100];
-            size_t len = sizeof(log_message);
-            sprintf(key, "log%d", i);
-            if (nvs_get_str(my_handle, key, log_message, &len) == ESP_OK) {
-                ESP_LOGE("LOG_HISTORY", "Log %d: %s", i, log_message);
+
+        ESP_LOGI(NVS_READER_TAG, "Namespace: %s", ns);
+        nvs_handle_t handle;
+        esp_err_t err = nvs_open(ns, NVS_READONLY, &handle);
+
+        if (err != ESP_OK) {
+            ESP_LOGI(NVS_READER_TAG, "  Failed to open namespace '%s'", ns);
+            continue;
+        }
+
+        for (int j = 0; j < num_keys; j++) {
+            const char* key = keys[i][j];
+            uint32_t value = 0;
+            
+            if (key == NULL || strlen(key) == 0) {
+                ESP_LOGW(NVS_READER_TAG, "  Skipping null or empty key [%d][%d]", i, j);
+                continue;
             }
+
+            err = nvs_get_u32(handle, key, &value);
+            if (err == ESP_OK) {
+                ESP_LOGI(NVS_READER_TAG, "  %s: %lu", key, value);
+            } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+                ESP_LOGI(NVS_READER_TAG, "  %s: [not set]", key);
+            } else {
+                ESP_LOGI(NVS_READER_TAG, "  %s: [error %d]", key, err);
+            }
+        
         }
-        nvs_close(my_handle);
+
+        nvs_close(handle);
     }
 }
+
+esp_err_t read_nvs_value(const char* namespaces[NS_COUNT], 
+    const char* keys[NS_COUNT][MAX_KEYS_PER_NS], 
+    const int key_counts[], 
+    int ns_count,
+    const char *ns_to_read,
+    const char *key_to_read,
+    ValueType _type,
+    void *out_val) {
+
+    for (int i = 0; i < ns_count; i++) {
+        const char* ns = namespaces[i];
+        int num_keys = key_counts[i];
+
+        if (num_keys > MAX_KEYS_PER_NS) {
+            ESP_LOGW(NVS_READER_TAG, "Skipping namespace '%s' due to too many keys", ns);
+            continue;
+        }
+
+        if (strcmp(ns_to_read, ns) != 0) {
+            continue;
+        }
+
+        ESP_LOGI(NVS_READER_TAG, "Namespace matched: %s", ns);
+        nvs_handle_t handle;
+        esp_err_t err = nvs_open(ns, NVS_READONLY, &handle);
+        if (err != ESP_OK) {
+            ESP_LOGE(NVS_READER_TAG, "Failed to open namespace '%s'", ns);
+            return err;
+        }
+
+        for (int j = 0; j < num_keys; j++) {
+            const char* key = keys[i][j];
+            if (key == NULL || strlen(key) == 0) {
+                continue;
+            }
+
+            if (strcmp(key_to_read, key) != 0) {
+                continue;
+            }
+
+            switch (_type) {
+                case TYPE_U8:
+                    err = nvs_get_u8(handle, key, (uint8_t *)out_val);
+                    break;
+                case TYPE_I8:
+                    err = nvs_get_i8(handle, key, (int8_t *)out_val);
+                    break;
+                case TYPE_U16:
+                    err = nvs_get_u16(handle, key, (uint16_t *)out_val);
+                    break;
+                case TYPE_I16:
+                    err = nvs_get_i16(handle, key, (int16_t *)out_val);
+                    break;
+                case TYPE_U32:
+                    err = nvs_get_u32(handle, key, (uint32_t *)out_val);
+                    break;
+                case TYPE_I32:
+                    err = nvs_get_i32(handle, key, (int32_t *)out_val);
+                    break;
+                default:
+                    ESP_LOGW(NVS_READER_TAG, "Unhandled value type");
+                    err = ESP_ERR_INVALID_ARG;
+                    break;
+            }
+
+            if (err == ESP_OK) {
+                ESP_LOGI(NVS_READER_TAG, " Key %s :  ", key);
+            } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+                ESP_LOGW(NVS_READER_TAG, "Key '%s' not set", key);
+            } else {
+                ESP_LOGE(NVS_READER_TAG, "Error reading key '%s': %s", key, esp_err_to_name(err));
+            }
+
+            nvs_close(handle);
+            return err;
+        }
+
+        nvs_close(handle);
+        return ESP_ERR_NOT_FOUND;
+    }
+
+    return ESP_ERR_NOT_FOUND;
+}
+
+
+// uint32_t read_nvs_value(const char* namespaces[NS_COUNT], 
+//     const char* keys[NS_COUNT][MAX_KEYS_PER_NS], 
+//     const int key_counts[], 
+//     int ns_count,
+//     const char *ns_to_read,
+//     const char *key_to_read,
+//     ValueType _type) {
+
+//     for (int i = 0; i < ns_count; i++) {
+//         const char* ns = namespaces[i];
+//         int num_keys = key_counts[i];
+
+//         if (num_keys > MAX_KEYS_PER_NS) {
+//             ESP_LOGW(NVS_READER_TAG, "Skipping namespace '%s' due to too many keys", ns);
+//             continue;
+//         }
+
+//         if(ns_to_read != ns){
+//             ESP_LOGW(NVS_READER_TAG, "no match with namespace  '%s'", ns);
+//             continue;
+//         }
+
+//         ESP_LOGI(NVS_READER_TAG, "Namespace: %s", ns);
+//         nvs_handle_t handle;
+//         esp_err_t err = nvs_open(ns, NVS_READONLY, &handle);
+
+//         if (err != ESP_OK) {
+//             ESP_LOGI(NVS_READER_TAG, "  Failed to open namespace '%s'", ns);
+//             continue;
+//         }
+
+//         for (int j = 0; j < num_keys; j++) {
+//             const char* key = keys[i][j];
+            
+            
+//             if (key == NULL || strlen(key) == 0) {
+//                 ESP_LOGW(NVS_READER_TAG, "  Skipping null or empty key [%d][%d]", i, j);
+//                 continue;
+//             }
+
+//             if(key != key_to_read){
+//                 ESP_LOGW(NVS_READER_TAG, "No match with the key [%d][%d]", i, j);
+//                 continue;
+//             }
+
+//             switch(_type){
+//                 case TYPE_U16: {
+//                     uint16_t value = 0;
+//                     err = nvs_get_u16(handle, key, &value);
+//                     if (err == ESP_OK) {
+//                         ESP_LOGI(NVS_READER_TAG, "  %s: %u", key, value);
+//                         return value;
+//                     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+//                         ESP_LOGI(NVS_READER_TAG, "  %s: [not set]", key);
+//                         return 0;
+//                     } else {
+//                         ESP_LOGI(NVS_READER_TAG, "  %s: [error %d]", key, err);
+//                         return 0;
+//                     }
+//                     break;
+//                 }
+//                 case TYPE_U32: {
+//                     uint32_t value = 0;
+//                     err = nvs_get_u32(handle, key, &value);
+//                     if (err == ESP_OK) {
+//                         ESP_LOGI(NVS_READER_TAG, "  %s: %lu", key, value);
+//                         return value;
+//                     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+//                         ESP_LOGI(NVS_READER_TAG, "  %s: [not set]", key);
+//                         return 0;
+//                     } else {
+//                         ESP_LOGI(NVS_READER_TAG, "  %s: [error %d]", key, err);
+//                         return 0;
+//                     }
+//                     break;
+//                 }
+//                 case TYPE_I8: {
+//                     int8_t value = 0;
+//                     err = nvs_get_u16(handle, key, &value);
+//                     if (err == ESP_OK) {
+//                         ESP_LOGI(NVS_READER_TAG, "  %s: %u", key, value);
+//                         return value;
+//                     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
+//                         ESP_LOGI(NVS_READER_TAG, "  %s: [not set]", key);
+//                         return 0;
+//                     } else {
+//                         ESP_LOGI(NVS_READER_TAG, "  %s: [error %d]", key, err);
+//                         return 0;
+//                     }
+//                     break;
+//                 }
+//                 default:
+//                     ESP_LOGW(NVS_READER_TAG, "Unhandled type");
+//                 break;
+//             }
+        
+//         }
+
+//         nvs_close(handle);
+//     }
+//     return 0;
+// }
 
 int custom_log_handler(const char *format, va_list args) {
     char log_message[256];
