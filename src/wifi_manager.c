@@ -2,10 +2,27 @@
 #include "mqtt_manager.h"
 #include "secrets.h"
 #include "esp_netif.h"
+#include "driver/gpio.h"
 #include <string.h>
+
+#define WIFI_LED_PIN GPIO_NUM_17
+#define WIFI_LED_TIMEPERIOD 500
 
 static int retry_count = 0;
 EventGroupHandle_t wifi_event_group;
+
+static TaskHandle_t wifi_blink_task_handle = NULL;
+void wifi_led_blink_task(void *arg);
+
+
+
+gpio_config_t wifi_led_conf = {
+    .pin_bit_mask = (1ULL << WIFI_LED_PIN),
+    .mode = GPIO_MODE_OUTPUT,
+    .pull_up_en = GPIO_PULLUP_DISABLE,
+    .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE
+};
 
 // Event Handler for Wi-Fi events
 static void wifi_event_handler(void* arg, esp_event_base_t event_base, 
@@ -13,6 +30,10 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
     if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+
+        if (wifi_blink_task_handle == NULL) {
+            xTaskCreatePinnedToCore(wifi_led_blink_task, "wifi_led_blink_task", 2048, NULL, 1, &wifi_blink_task_handle, 1);
+            }
         if (retry_count < MAX_RETRIES) {
             esp_wifi_connect();
             retry_count++;
@@ -24,8 +45,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
             esp_wifi_start();  // Restart Wi-Fi, this will trigger STA_START -> connect again
             retry_count = 0;   // Reset retries to allow normal flow
             
-        }
-        else{
+        }else{
             ESP_LOGI("WiFi", "Failed to connect to Wi-Fi");
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
@@ -33,6 +53,14 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
         ESP_LOGI("WiFi", "Connected! IP Address: " IPSTR, IP2STR(&event->ip_info.ip));
         retry_count = 0; // Reset retry count
         xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        
+        if (wifi_blink_task_handle) {
+            vTaskDelete(wifi_blink_task_handle);
+            wifi_blink_task_handle = NULL;
+        }
+        
+        // Set LED solid ON
+        gpio_set_level(WIFI_LED_PIN, 1);
 
         mqtt_reconnect(); //try reconnecting MQTT again
     }
@@ -40,6 +68,12 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 
 // Initialize Wi-Fi in Station Mode
 void wifi_init_sta() {
+
+    gpio_config(&wifi_led_conf);
+    gpio_set_level(WIFI_LED_PIN, 0);
+
+
+
     // Initialize TCP/IP stack
     esp_netif_init();
     wifi_event_group = xEventGroupCreate();
@@ -87,5 +121,14 @@ void set_dns() {
         ESP_LOGI("DNS", "Set DNS to 8.8.8.8");
     } else {
         ESP_LOGE("DNS", "Failed to get netif handle");
+    }
+}
+
+void wifi_led_blink_task(void *arg) {
+    while (1) {
+        gpio_set_level(WIFI_LED_PIN, 1);
+        vTaskDelay(pdMS_TO_TICKS(WIFI_LED_TIMEPERIOD));
+        gpio_set_level(WIFI_LED_PIN, 0);
+        vTaskDelay(pdMS_TO_TICKS(WIFI_LED_TIMEPERIOD));
     }
 }

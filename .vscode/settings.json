@@ -34,7 +34,9 @@
         "functional": "c",
         "tuple": "c",
         "type_traits": "c",
-        "utility": "c"
+        "utility": "c",
+        "gpio.h": "c",
+        "stdbool.h": "c"
     },
-    "idf.portWin": "COM12"
+    "idf.portWin": "COM16"
 }

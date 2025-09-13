@@ -4,10 +4,23 @@
 #include "esp_crt_bundle.h"
 #include "mqtt_client.h"
 #include "sharedData.h"
+#include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "nvs.h"
 
 // #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
+
+#define MQTT_LED_PIN GPIO_NUM_17
+#define MQTT_LED_TIMEPERIOD 100
+static TaskHandle_t mqtt_blink_task_handle = NULL;
+
+gpio_config_t mqtt_led_conf = {
+    .pin_bit_mask = (1ULL << MQTT_LED_PIN),
+    .mode = GPIO_MODE_OUTPUT,
+    .pull_up_en = GPIO_PULLUP_DISABLE,
+    .pull_down_en = GPIO_PULLDOWN_DISABLE,
+    .intr_type = GPIO_INTR_DISABLE
+};
 
 static const char *TAG = "MQTT";
 static const char *MQTT_PARSE = "MQTT Payload";
@@ -31,6 +44,14 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             ESP_LOGI(TAG, "MQTT Connected");
             mqtt_connected = true;
 
+            if (mqtt_blink_task_handle) {
+                vTaskDelete(mqtt_blink_task_handle);
+                mqtt_blink_task_handle = NULL;
+            }
+        
+            // Set LED solid ON
+            gpio_set_level(MQTT_LED_PIN, 1);
+
             for (int i = 0; i < num_subscribed_topics; ++i) {
                 int msg_id = esp_mqtt_client_subscribe(client, subscribed_topics[i], 0);
                 ESP_LOGI(TAG, "Subscribed to topic: %s, msg_id: %d", subscribed_topics[i], msg_id);
@@ -39,6 +60,9 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             break;
         case MQTT_EVENT_DISCONNECTED:
             ESP_LOGI(TAG, "MQTT Disconnected");
+            if (mqtt_blink_task_handle == NULL) {
+                xTaskCreatePinnedToCore(mqtt_led_blink_task, "mqtt_led_blink_task", 2048, NULL, 1, &mqtt_blink_task_handle, 1);
+            }
             mqtt_connected = false;
             break;
         case MQTT_EVENT_DATA:{
@@ -76,6 +100,10 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
 
 // Initialize MQTT
 void mqtt_init(const char **topics, int num_topics) {
+
+    gpio_config(&mqtt_led_conf);
+    gpio_set_level(MQTT_LED_PIN, 0);
+
     subscribed_topics = topics;
     num_subscribed_topics = num_topics;
 
@@ -296,5 +324,14 @@ void store_values(char *nvs_namespace, char *handle, ValueType _type, const void
         default:
             ESP_LOGW(NVS_WRITER, "Unhandled type");
         break;
+    }
+}
+
+void mqtt_led_blink_task(void *arg) {
+    while (1) {
+        gpio_set_level(MQTT_LED_PIN, 1);
+        vTaskDelay(pdMS_TO_TICKS(MQTT_LED_TIMEPERIOD));
+        gpio_set_level(MQTT_LED_PIN, 0);
+        vTaskDelay(pdMS_TO_TICKS(MQTT_LED_TIMEPERIOD));
     }
 }

@@ -23,6 +23,7 @@ void parseScheduleJson(const char *jsonBuffer);
 void parseCommandJson(const char *jsonBuffer);
 void parseOTACommandJson(const char *jsonBuffer);
 void store_values(char *nvs_namespace, char *handle, ValueType _type, const void* val_ptr);
+void mqtt_led_blink_task(void *arg);
 
 #ifdef __cplusplus
 }

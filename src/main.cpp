@@ -9,7 +9,8 @@
 #include "OTA_manager.h"
 #include "sharedData.h"
 #include "generic_uart_driver.h"
-#include "sht31.h"
+// #include "sht31.h"
+#include "sht41.h"
 #include "driver/i2c.h"
 #include <string.h>
 #include <math.h>
@@ -148,7 +149,7 @@ class SHT31Sensor {
         SHT31Sensor(i2c_port_t i2c_num, uint8_t address) : i2c_num(i2c_num), address(address) {}
     
         bool init() {
-            if (sht31_init(i2c_num, address) == ESP_OK) {
+            if (sht4x_init(i2c_num, address) == ESP_OK) {
                 ESP_LOGI(SHT_TAG, "SHT31 sensor initialized successfully.");
                 return true;
             } else {
@@ -158,7 +159,7 @@ class SHT31Sensor {
         }
     
         bool read(float &temperature, float &humidity) {
-            return sht31_read(&temperature, &humidity, SHT31_HIGH_PRECISION) == ESP_OK;
+            return sht4x_read(&temperature, &humidity, SHT4X_PREC_HIGH) == ESP_OK;
         }
     
     private:
@@ -228,8 +229,8 @@ void app_main() {
     xTaskCreatePinnedToCore(drive_motor_task, "Driving Motor", 4096, NULL, 3, &myTaskHandle, 0);
     xTaskCreatePinnedToCore(ping_ph_task, "Pinging PH sensor", 4096, NULL, 4, &myTaskHandle, 1);
     xTaskCreatePinnedToCore(ping_sht_task, "posting SHT31", 4096, NULL, 5, &myTaskHandle, 1);
-    // xTaskCreatePinnedToCore(post_mqtt_task, "posting MQTT Data", 4096, NULL, 6, &myTaskHandle, 1);
-    // xTaskCreatePinnedToCore(ota_update_task, "OTA Update", 8192, NULL, 7, &myTaskHandle, 0);
+    xTaskCreatePinnedToCore(post_mqtt_task, "posting MQTT Data", 4096, NULL, 6, &myTaskHandle, 1);
+    xTaskCreatePinnedToCore(ota_update_task, "OTA Update", 8192, NULL, 7, &myTaskHandle, 0);
 
 }
 
@@ -338,11 +339,7 @@ void ping_ph_task(void *arg){
         bytes_received = uart_device_receive(UART_NUM_2, rx_buf, sizeof(rx_buf), pdMS_TO_TICKS(5000));
 
         if (bytes_received > 0) {
-            // ESP_LOGI(PH_TAG, "Bytes = ");
-            // for(uint8_t i=0; i<12; i++){
-            //     ESP_LOGI(PH_TAG, "0x%02X", rx_buf[i]);
-            // }
-            // Example of reading data from the response frame
+  
             N = (rx_buf[3] << 8) | rx_buf[4];  
             P = (rx_buf[5] << 8) | rx_buf[6];  
             K = (rx_buf[7] << 8) | rx_buf[8]; 
@@ -372,17 +369,40 @@ void ping_ph_task(void *arg){
 
 
 void ping_sht_task(void *arg) {
-    SHT31Sensor sensor(I2C_MASTER_NUM, SHT31_I2C_ADDR);
+    uint8_t sht_init_flag = 0;
+    uint8_t sht_retries = 0;
+    SHT31Sensor sensor(I2C_MASTER_NUM, SHT4X_I2C_ADDR_DEFAULT);
     if (!sensor.init()) {
         ESP_LOGE(SHT_TAG, "SHT Failed to Initialize!");
-        vTaskDelete(NULL);
-        return;
+        uint8_t sht_init_flag = 0;
+        // vTaskDelete(NULL);
+        // return;
+    }
+    else{
+        sht_init_flag = 1;
     }
 
     float temperature, humidity;
 
     while (1) {
-        if (sensor.read(temperature, humidity)) {
+
+        if(!sht_init_flag && sht_retries < 3){
+            if (!sensor.init()) {
+                ESP_LOGE(SHT_TAG, "Retry: SHT Failed to Initialize!");
+                uint8_t sht_init_flag = 0;
+                sht_retries += 1;
+            }
+            else{
+                sht_init_flag = 1;
+            }
+        } else if(!sht_init_flag && sht_retries >= 3){
+            ESP_LOGE(SHT_TAG, "SHT Failed to Initialize!, deleting task!");
+            vTaskDelete(NULL);
+
+        }
+        
+
+        if (sht_init_flag && sensor.read(temperature, humidity)) {
             ESP_LOGE("MEM", "1st Free heap: %lu", esp_get_free_heap_size());
             ESP_LOGE("MEM", "1st Minimum Heap Size: %lu", esp_get_minimum_free_heap_size());
 
@@ -495,6 +515,7 @@ void drive_motor_task(void *arg) {
     xTaskCreate(motor_worker_task, "motor_worker", 4096, NULL, 8, &motor_worker_task_handle);
 
     while (1) {
+        vTaskDelay(1); //DEBUG DELAY
         // Access shared_sub_data safely
         if (xSemaphoreTake(shared_sub_data_mutex, portMAX_DELAY) == pdTRUE) {
             current_motor_command = shared_sub_data.motor_command;
@@ -516,6 +537,9 @@ void drive_motor_task(void *arg) {
             }
 
             if (current_motor_command != previous_motor_state && current_motor_command == 1) {
+
+                vTaskDelay(pdMS_TO_TICKS(100));
+
                 gpio_set_level(MOTOR_PIN, 1);
 
                 cJSON *ack = cJSON_CreateObject();
@@ -545,6 +569,9 @@ void drive_motor_task(void *arg) {
 
             previous_motor_state = current_motor_command;
         } else if (current_motor_command == -1){
+
+            vTaskDelay(pdMS_TO_TICKS(100));
+
             if (motor_timer != NULL && (time_period != last_timer_period_ms || duration != last_duration)) {
                 xTimerStop(motor_timer, 0);
                 xTimerDelete(motor_timer, 0);
@@ -564,7 +591,6 @@ void drive_motor_task(void *arg) {
                 last_duration = duration;
             }
         } else{
-                ESP_LOGI(MOTOR_TAG, "Manual Motor Mode");  
                 continue;
         }
 
@@ -597,15 +623,19 @@ void motor_worker_task(void *arg) {
         
         if (humidity < HUMID_CONSTRAINT) {
             ESP_LOGI(MOTOR_TAG, "Humidity %.2f below threshold. Activating motor.", humidity);
-            gpio_set_level(MOTOR_PIN, 1);
+
+            vTaskDelay(pdMS_TO_TICKS(10));
+
             ESP_LOGI(MOTOR_TAG, "Scheduled Motor start!");
             cJSON *ack = cJSON_CreateObject();
             cJSON_AddStringToObject(ack, "status", "True");
             const char *ack_str = cJSON_Print(ack);
             mqtt_publish(MQTT_TOPIC_PUB_ACK, ack_str);
 
+            gpio_set_level(MOTOR_PIN, 1);
             vTaskDelay(pdMS_TO_TICKS(ctx->duration));
             gpio_set_level(MOTOR_PIN, 0);
+
             ESP_LOGI(MOTOR_TAG, "Motor stopped after scheduled run.");
 
             // Send acknowledgment and optionally store state in NVS
