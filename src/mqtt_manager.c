@@ -10,7 +10,7 @@
 
 // #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
 
-#define MQTT_LED_PIN GPIO_NUM_17
+#define MQTT_LED_PIN GPIO_NUM_4
 #define MQTT_LED_TIMEPERIOD 100
 static TaskHandle_t mqtt_blink_task_handle = NULL;
 
@@ -62,6 +62,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             ESP_LOGI(TAG, "MQTT Disconnected");
             if (mqtt_blink_task_handle == NULL) {
                 xTaskCreatePinnedToCore(mqtt_led_blink_task, "mqtt_led_blink_task", 2048, NULL, 1, &mqtt_blink_task_handle, 1);
+                ESP_LOGI(TAG, "LED task created");
+
             }
             mqtt_connected = false;
             break;

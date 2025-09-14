@@ -122,12 +122,7 @@ void read_all_nvs_values(const char* namespaces[NS_COUNT],
      const char* keys[NS_COUNT][MAX_KEYS_PER_NS],
       const int key_counts[],
        int ns_count);
-// uint32_t read_nvs_value(const char* namespaces[NS_COUNT], 
-//     const char* keys[NS_COUNT][MAX_KEYS_PER_NS], 
-//     const int key_counts[], 
-//     int ns_count,
-//     const char *ns_to_read,
-//     const char *key_to_read);
+
 esp_err_t read_nvs_value(const char* namespaces[NS_COUNT], 
     const char* keys[NS_COUNT][MAX_KEYS_PER_NS], 
     const int key_counts[], 
@@ -136,6 +131,7 @@ esp_err_t read_nvs_value(const char* namespaces[NS_COUNT],
     const char *key_to_read,
     ValueType _type,
     void *out_val);
+
 void log_error_to_nvs(const char *error_message);
 int custom_log_handler(const char *format, va_list args);
 void motor_timer_callback(TimerHandle_t xTimer);
@@ -177,7 +173,6 @@ void app_main() {
         ESP_ERROR_CHECK(nvs_flash_erase());
         ESP_ERROR_CHECK(nvs_flash_init());
     }
-    // read_all_nvs_values(namespaces, all_keys, key_counts, NS_COUNT);
 
     
     // Create shared semaphore
@@ -413,16 +408,6 @@ void ping_sht_task(void *arg) {
             shared_data.humidity = humidity;
             shared_data.new_data_ready = true; // Mark new data as ready
             xSemaphoreGive(data_publish_mutex); // Release lock
-
-            // cJSON *mqtt_data = cJSON_CreateObject();
-            // cJSON_AddNumberToObject(mqtt_data, "Temp", temperature);
-            // cJSON_AddNumberToObject(mqtt_data, "moistureVal", humidity);
-            // const char *my_json_string = cJSON_Print(mqtt_data);
-            // if (mqtt_publish(MQTT_TOPIC_PUB, my_json_string) != ESP_OK) {
-            //     ESP_LOGE(MQTT_TAG, "MQTT client not Publishing");
-            // }
-            // free((void *)my_json_string);  // Free the memory used by JSON string
-            // cJSON_Delete(mqtt_data);
 
         } else {
             ESP_LOGE(SHT_TAG, "Failed to read temperature and humidity");
@@ -900,110 +885,6 @@ esp_err_t read_nvs_value(const char* namespaces[NS_COUNT],
 
     return ESP_ERR_NOT_FOUND;
 }
-
-
-// uint32_t read_nvs_value(const char* namespaces[NS_COUNT], 
-//     const char* keys[NS_COUNT][MAX_KEYS_PER_NS], 
-//     const int key_counts[], 
-//     int ns_count,
-//     const char *ns_to_read,
-//     const char *key_to_read,
-//     ValueType _type) {
-
-//     for (int i = 0; i < ns_count; i++) {
-//         const char* ns = namespaces[i];
-//         int num_keys = key_counts[i];
-
-//         if (num_keys > MAX_KEYS_PER_NS) {
-//             ESP_LOGW(NVS_READER_TAG, "Skipping namespace '%s' due to too many keys", ns);
-//             continue;
-//         }
-
-//         if(ns_to_read != ns){
-//             ESP_LOGW(NVS_READER_TAG, "no match with namespace  '%s'", ns);
-//             continue;
-//         }
-
-//         ESP_LOGI(NVS_READER_TAG, "Namespace: %s", ns);
-//         nvs_handle_t handle;
-//         esp_err_t err = nvs_open(ns, NVS_READONLY, &handle);
-
-//         if (err != ESP_OK) {
-//             ESP_LOGI(NVS_READER_TAG, "  Failed to open namespace '%s'", ns);
-//             continue;
-//         }
-
-//         for (int j = 0; j < num_keys; j++) {
-//             const char* key = keys[i][j];
-            
-            
-//             if (key == NULL || strlen(key) == 0) {
-//                 ESP_LOGW(NVS_READER_TAG, "  Skipping null or empty key [%d][%d]", i, j);
-//                 continue;
-//             }
-
-//             if(key != key_to_read){
-//                 ESP_LOGW(NVS_READER_TAG, "No match with the key [%d][%d]", i, j);
-//                 continue;
-//             }
-
-//             switch(_type){
-//                 case TYPE_U16: {
-//                     uint16_t value = 0;
-//                     err = nvs_get_u16(handle, key, &value);
-//                     if (err == ESP_OK) {
-//                         ESP_LOGI(NVS_READER_TAG, "  %s: %u", key, value);
-//                         return value;
-//                     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
-//                         ESP_LOGI(NVS_READER_TAG, "  %s: [not set]", key);
-//                         return 0;
-//                     } else {
-//                         ESP_LOGI(NVS_READER_TAG, "  %s: [error %d]", key, err);
-//                         return 0;
-//                     }
-//                     break;
-//                 }
-//                 case TYPE_U32: {
-//                     uint32_t value = 0;
-//                     err = nvs_get_u32(handle, key, &value);
-//                     if (err == ESP_OK) {
-//                         ESP_LOGI(NVS_READER_TAG, "  %s: %lu", key, value);
-//                         return value;
-//                     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
-//                         ESP_LOGI(NVS_READER_TAG, "  %s: [not set]", key);
-//                         return 0;
-//                     } else {
-//                         ESP_LOGI(NVS_READER_TAG, "  %s: [error %d]", key, err);
-//                         return 0;
-//                     }
-//                     break;
-//                 }
-//                 case TYPE_I8: {
-//                     int8_t value = 0;
-//                     err = nvs_get_u16(handle, key, &value);
-//                     if (err == ESP_OK) {
-//                         ESP_LOGI(NVS_READER_TAG, "  %s: %u", key, value);
-//                         return value;
-//                     } else if (err == ESP_ERR_NVS_NOT_FOUND) {
-//                         ESP_LOGI(NVS_READER_TAG, "  %s: [not set]", key);
-//                         return 0;
-//                     } else {
-//                         ESP_LOGI(NVS_READER_TAG, "  %s: [error %d]", key, err);
-//                         return 0;
-//                     }
-//                     break;
-//                 }
-//                 default:
-//                     ESP_LOGW(NVS_READER_TAG, "Unhandled type");
-//                 break;
-//             }
-        
-//         }
-
-//         nvs_close(handle);
-//     }
-//     return 0;
-// }
 
 int custom_log_handler(const char *format, va_list args) {
     char log_message[256];

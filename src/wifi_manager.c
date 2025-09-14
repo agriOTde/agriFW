@@ -5,7 +5,7 @@
 #include "driver/gpio.h"
 #include <string.h>
 
-#define WIFI_LED_PIN GPIO_NUM_17
+#define WIFI_LED_PIN GPIO_NUM_4
 #define WIFI_LED_TIMEPERIOD 500
 
 static int retry_count = 0;
@@ -33,6 +33,7 @@ static void wifi_event_handler(void* arg, esp_event_base_t event_base,
 
         if (wifi_blink_task_handle == NULL) {
             xTaskCreatePinnedToCore(wifi_led_blink_task, "wifi_led_blink_task", 2048, NULL, 1, &wifi_blink_task_handle, 1);
+            // ESP_LOGI("WiFi","WiFi task created"); //DEBUG
             }
         if (retry_count < MAX_RETRIES) {
             esp_wifi_connect();
@@ -126,6 +127,7 @@ void set_dns() {
 
 void wifi_led_blink_task(void *arg) {
     while (1) {
+        // ESP_LOGI("WiFi","In LED task"); //DEBUG
         gpio_set_level(WIFI_LED_PIN, 1);
         vTaskDelay(pdMS_TO_TICKS(WIFI_LED_TIMEPERIOD));
         gpio_set_level(WIFI_LED_PIN, 0);
