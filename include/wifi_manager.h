@@ -1,3 +1,13 @@
+/**
+ * @file wifi_manager.h
+ * @brief Wi-Fi initialization and connection management for ESP32.
+ *
+ * Provides functions to initialize the ESP32 in station mode, handle
+ * connection retries, configure DNS servers, and define event group bits
+ * used to signal Wi-Fi connection status.
+ */
+
+
 #ifndef WIFI_MANAGER_H
 #define WIFI_MANAGER_H
 

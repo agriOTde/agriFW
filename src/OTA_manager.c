@@ -82,18 +82,6 @@ uint8_t ota_update(void) {
         ESP_LOGI(OTA_TAG, "Written %d bytes...", binary_file_len);
     }
 
-    // test
-    // if((data_read = esp_http_client_read(client, ota_write_data, OTA_BUF_SIZE)) > 0){
-
-    //     for (int i = 0; i < data_read && i < 16; ++i) {
-    //         printf("%02X ", (unsigned char)ota_write_data[i]);
-    //     }
-    //     printf("\n");
-    // } else {
-    //     ESP_LOGI(OTA_TAG, "Empty Buffer!");
-    // }
-
-    // test
 
     if (data_read < 0) {
         ESP_LOGE(OTA_TAG, "Error reading HTTP stream");

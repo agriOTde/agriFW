@@ -36,7 +36,11 @@
         "type_traits": "c",
         "utility": "c",
         "gpio.h": "c",
-        "stdbool.h": "c"
+        "stdbool.h": "c",
+        "esp_crt_bundle.h": "c",
+        "nvs.h": "c",
+        "nvs_manager.h": "c",
+        "nvs_flash.h": "c"
     },
     "idf.portWin": "COM16"
 }

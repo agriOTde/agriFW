@@ -1,12 +1,11 @@
 #include "mqtt_manager.h"
+#include "nvs_manager.h"
 #include "esp_log.h"
 #include "esp_tls.h"
 #include "esp_crt_bundle.h"
 #include "mqtt_client.h"
 #include "sharedData.h"
 #include "driver/gpio.h"
-#include "nvs_flash.h"
-#include "nvs.h"
 
 // #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
 
@@ -24,7 +23,6 @@ gpio_config_t mqtt_led_conf = {
 
 static const char *TAG = "MQTT";
 static const char *MQTT_PARSE = "MQTT Payload";
-static const char *NVS_WRITER = "NVS_WRITER";
 
 static esp_mqtt_client_handle_t client;  // MQTT client handle
 static bool mqtt_connected = false;
@@ -77,6 +75,8 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             topic[event->topic_len] = '\0';
             memcpy(data, event->data, event->data_len);
             data[event->data_len] = '\0';
+            ESP_LOGI(TAG, "DEBUG: incoming topic='%s' expected='%s'", topic, MQTT_TOPIC_MOTOR_HUMIDITY);
+
 
             if (strcmp(topic, MQTT_TOPIC_MOTOR_SCHEDULE) == 0) {
                 // Parse JSON for schedule (esp32/motor/schedule)
@@ -87,6 +87,11 @@ static void mqtt_event_handler(void *handler_args, esp_event_base_t base, int32_
             } else if (strcmp(topic, MQTT_TOPIC_OTA_CMD) == 0) {
                 // Parse JSON for command (esp32/motor/command)
                 parseOTACommandJson(data);
+            } else if (strcmp(topic, MQTT_TOPIC_MOTOR_HUMIDITY) == 0) {
+                // Parse JSON for command (esp32/motor/command)
+                ESP_LOGI(TAG, "DEBUF: PARSE Humidity");
+
+                parseHumSetPointJson(data);
             }
 
             break;
@@ -112,7 +117,8 @@ void mqtt_init(const char **topics, int num_topics) {
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri = RPI_MQTT_BROKER_URI,
         .network.timeout_ms = 5000,
-        .task.stack_size = 8192
+        .task.stack_size = 8192,
+        .task.priority = 10
     };
 
     client = esp_mqtt_client_init(&mqtt_cfg);
@@ -156,12 +162,11 @@ void parseScheduleJson(const char *jsonBuffer) {
         ESP_LOGI(MQTT_PARSE, "Received TimePeriod: %d", timePeriod->valueint);
     }
 
-    // Clean up the cJSON object
-    cJSON_Delete(json);
+
 
     // Update shared data (ensure mutex is taken to safely modify shared data)
     if (cJSON_IsNumber(duration) && cJSON_IsNumber(timePeriod)) {
-        if (xSemaphoreTake(shared_sub_data_mutex, pdMS_TO_TICKS(100))==pdTRUE) {
+        if (xSemaphoreTake(shared_sub_data_mutex, pdMS_TO_TICKS(SHARED_SUB_DATA_MUTEX_DELAY))==pdTRUE) {
             shared_sub_data.motor_duration = duration->valueint;
             shared_sub_data.motor_timePeriod = timePeriod->valueint;
             xSemaphoreGive(shared_sub_data_mutex);
@@ -176,6 +181,8 @@ void parseScheduleJson(const char *jsonBuffer) {
     else {
         ESP_LOGE(MQTT_PARSE, "Invalid or missing Duration/TimePeriod in JSON");
     }
+    // Clean up the cJSON object
+    cJSON_Delete(json);
 }
 
 void parseCommandJson(const char *jsonBuffer) {
@@ -198,12 +205,11 @@ void parseCommandJson(const char *jsonBuffer) {
         return;
     }
 
-    // Clean up the cJSON object
-    cJSON_Delete(json);
+
 
     // Try to update the shared data (ensure mutex is taken to safely modify shared data)
     if (cJSON_IsNumber(cmd)){
-            if (xSemaphoreTake(shared_sub_data_mutex, portMAX_DELAY) == pdTRUE) {
+            if (xSemaphoreTake(shared_sub_data_mutex, pdMS_TO_TICKS(SHARED_SUB_DATA_MUTEX_DELAY)) == pdTRUE) {
             ESP_LOGE(MQTT_PARSE, "SEMAPHORE YIELDED");
 
             // Update the shared data based on the command
@@ -231,8 +237,56 @@ void parseCommandJson(const char *jsonBuffer) {
     } else {
         ESP_LOGE(MQTT_PARSE, "Invalid or missing Command in JSON");
     }
+    // Clean up the cJSON object
+    cJSON_Delete(json);
 }
 
+void parseHumSetPointJson(const char *jsonBuffer) {
+    // Parse the JSON string into a cJSON object
+    cJSON *json = cJSON_Parse(jsonBuffer);
+    if (json == NULL) {
+        ESP_LOGE(MQTT_PARSE, "Error parsing JSON: %s", jsonBuffer);
+        return;
+    }
+
+    // Extract the "cmd" item from the JSON object
+    cJSON *cmd = cJSON_GetObjectItemCaseSensitive(json, "humidity");
+
+    // Check if the cmd is a valid string
+    if (cJSON_IsNumber(cmd)) {
+        ESP_LOGI(MQTT_PARSE, "Received Humidity: %d", cmd->valueint);
+    } else {
+        ESP_LOGE(MQTT_PARSE, "Invalid command in JSON, 'Humidity' is not a number or is NULL.");
+        cJSON_Delete(json);
+        return;
+    }
+
+
+
+    // Try to update the shared data (ensure mutex is taken to safely modify shared data)
+    if (cJSON_IsNumber(cmd)){
+            if (xSemaphoreTake(shared_sub_data_mutex, pdMS_TO_TICKS(SHARED_SUB_DATA_MUTEX_DELAY)) == pdTRUE) {
+            // ESP_LOGE(MQTT_PARSE, "SEMAPHORE YIELDED");
+
+            // Update the shared data based on the command
+            if ((cmd->valueint) > 0 && (cmd->valueint) <= 100  ) {
+                ESP_LOGE(MQTT_PARSE, "Stored Humidity");
+                shared_sub_data.humidity_constraint = cmd->valueint;
+                store_values("constraints","humidity", TYPE_I8,&cmd->valueint);
+            } else {
+                ESP_LOGI(MQTT_PARSE, "Invalid Humidity Value");
+            }
+            // Release the semaphore
+            xSemaphoreGive(shared_sub_data_mutex);
+        } else {
+            ESP_LOGE(MQTT_PARSE, "Parse Humidity SEMAPHORE DID NOT YIELD");
+        }
+    } else {
+        ESP_LOGE(MQTT_PARSE, "Invalid or missing Command in JSON");
+    }
+    // Clean up the cJSON object
+    cJSON_Delete(json);
+}
 void parseOTACommandJson(const char *jsonBuffer) {
     // Parse the JSON string into a cJSON object
     cJSON *json = cJSON_Parse(jsonBuffer);
@@ -253,12 +307,11 @@ void parseOTACommandJson(const char *jsonBuffer) {
         return;
     }
 
-    // Clean up the cJSON object
-    cJSON_Delete(json);
+
 
     // Try to update the shared data (ensure mutex is taken to safely modify shared data)
     if (cJSON_IsNumber(cmd)){
-            if (xSemaphoreTake(ota_shared_mutex, portMAX_DELAY) == pdTRUE) {
+            if (xSemaphoreTake(ota_shared_mutex, pdMS_TO_TICKS(OTA_SHARED_MUTEX_DELAY)) == pdTRUE) {
             // ESP_LOGE(MQTT_PARSE, "SEMAPHORE YIELDED");
 
             // Update the shared data based on the command
@@ -279,54 +332,8 @@ void parseOTACommandJson(const char *jsonBuffer) {
     } else {
         ESP_LOGE(MQTT_PARSE, "Invalid or missing Command in JSON");
     }
-}
-
-void store_values(char *nvs_namespace, char *handle, ValueType _type, const void* val_ptr){
-    nvs_handle_t nvs_handle;
-    esp_err_t nvs_err;
-    nvs_err = nvs_open(nvs_namespace, NVS_READWRITE, &nvs_handle);
-    if (nvs_err != ESP_OK) {
-        printf("Error opening NVS!\n");
-        return;
-    }
-    switch(_type){
-        case TYPE_U16: {
-            uint16_t val = *(uint16_t *)val_ptr;
-            nvs_err = nvs_set_u16(nvs_handle, handle, val); 
-            if (nvs_err == ESP_OK) {
-                nvs_commit(nvs_handle);  // save to flash
-                ESP_LOGI(NVS_WRITER, "Stored value of %s = %u in namespace = %s ", handle, val, nvs_namespace);
-            } else {
-                ESP_LOGE(NVS_WRITER, "Failed to store value");
-            }
-            break;
-        }
-        case TYPE_U32: {
-            uint32_t val = *(uint32_t *)val_ptr;
-            nvs_err = nvs_set_u32(nvs_handle, handle, val); 
-            if (nvs_err == ESP_OK) {
-                nvs_commit(nvs_handle);  // save to flash
-                ESP_LOGI(NVS_WRITER, "Stored value of %s = %lu in namespace = %s ", handle, val, nvs_namespace);
-            } else {
-                ESP_LOGE(NVS_WRITER, "Failed to store value");
-            }
-            break;
-        }
-        case TYPE_I8: {
-            int8_t val = *(int8_t *)val_ptr;
-            nvs_err = nvs_set_i8(nvs_handle, handle, val); 
-            if (nvs_err == ESP_OK) {
-                nvs_commit(nvs_handle);  // save to flash
-                ESP_LOGI(NVS_WRITER, "Stored value of %s = %d in namespace = %s ", handle, val, nvs_namespace);
-            } else {
-                ESP_LOGE(NVS_WRITER, "Failed to store value");
-            }
-            break;
-        }
-        default:
-            ESP_LOGW(NVS_WRITER, "Unhandled type");
-        break;
-    }
+    // Clean up the cJSON object
+    cJSON_Delete(json);
 }
 
 void mqtt_led_blink_task(void *arg) {
