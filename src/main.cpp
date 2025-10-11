@@ -12,6 +12,8 @@
 #include "sht41.h"
 #include "driver/i2c.h"
 #include <string.h>
+#include <vector>
+#include <string>
 #include <math.h>
 #include "esp_system.h"
 #include "esp_event.h"
@@ -48,12 +50,6 @@ typedef struct {
 //Constraint Presets
 #define HUMID_CONSTRAINT 25.0
 
-const char *subscribe_topics[] = {
-    MQTT_TOPIC_MOTOR_CMD,
-    MQTT_TOPIC_MOTOR_SCHEDULE,
-    MQTT_TOPIC_MOTOR_HUMIDITY,
-    MQTT_TOPIC_OTA_CMD
-};
 
 // #define LOG_LOCAL_LEVEL ESP_LOG_ERROR
 #define MAX_LOGS_NVS 5
@@ -94,6 +90,16 @@ sensor_data_t shared_data{
 };
 
 
+const std::vector<const char*> subscribe_topics = {
+    MQTT_TOPIC_MOTOR_CMD,
+    MQTT_TOPIC_MOTOR_SCHEDULE,
+    MQTT_TOPIC_MOTOR_HUMIDITY,
+    MQTT_TOPIC_OTA_CMD
+};
+std::vector<const char*> sub_topic_ptrs;
+std::vector<std::string> sub_topics_str;
+
+
 extern "C"
 { 
 
@@ -111,6 +117,7 @@ static esp_err_t i2c_master_init();
 void log_error_to_nvs(const char *error_message);
 int custom_log_handler(const char *format, va_list args);
 void motor_timer_callback(TimerHandle_t xTimer);
+std::vector<std::string> id_appended_topics(const std::vector<const char*>& s_topics, const char * esp_id);
 static TimerHandle_t motor_timer = NULL;
 bool ota_flag = true;
 
@@ -194,15 +201,27 @@ void app_main() {
     } else {
         ESP_LOGE(MAIN_TAG, "Failed to read values from NVS!");
     }
+
+    // append espIDs to the topics
     const char * ESP_ID_CLIENT = get_esp_client_id();
     ESP_LOGI(MAIN_TAG, "My Chip ID: %s\n", ESP_ID_CLIENT);
+    sub_topics_str = id_appended_topics(subscribe_topics, ESP_ID_CLIENT);
+
+
+    for (auto& t : sub_topics_str){
+        sub_topic_ptrs.push_back(t.c_str());  // safe, because sub_topics_str stays alive
+    }
+
+    for(auto t: sub_topic_ptrs){
+        ESP_LOGI(MAIN_TAG, "Sub Topic: %s\n",t);
+    }
 
 
     // Initialize Wi-Fi
     wifi_init_sta();
 
     // Init MQTT Client
-    mqtt_init(subscribe_topics, sizeof(subscribe_topics)/sizeof(subscribe_topics[0]));
+    mqtt_init(sub_topic_ptrs.data(), sub_topic_ptrs.size());
 
 
     // Set DNS and test DNS resolution
@@ -777,4 +796,20 @@ int custom_log_handler(const char *format, va_list args) {
     vprintf(format, args);
     return ret;
 }
+
+std::vector<std::string> id_appended_topics(const std::vector<const char*>& s_topics, const char * esp_id){
+
+    std::vector<std::string> temp_topics;
+    temp_topics.reserve(s_topics.size());
+
+
+    for (auto base : s_topics) {
+        std::string topic = std::string(esp_id) + "/" + base;
+        temp_topics.push_back(topic);
+    }
+
+    return temp_topics;
+
+}
+
 };

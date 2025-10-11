@@ -25,6 +25,7 @@ const char* all_keys[NS_COUNT][MAX_KEYS_PER_NS] = {{"timeperiod", "duration", "c
 
 const int key_counts[NS_COUNT] = {3};
 
+
 char * get_esp_client_id(void){
     ESP_LOGI(SHARED_DATA_TAG, "MQTT Client ID");
     uint8_t mac[6];

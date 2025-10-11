@@ -21,25 +21,8 @@ extern "C" {
 #include "cJSON.h"
 #include <stdbool.h>
 
-#define ESP_ID "esp32/pub"
 
-
-#define MQTT_TOPIC_PUB "esp32/pub"
-#define MQTT_TOPIC_PUB_ACK "esp32/motor/ack"
-#define MQTT_TOPIC_MOTOR_CMD "esp32/motor/command"
-#define MQTT_TOPIC_MOTOR_SCHEDULE "esp32/motor/schedule"
-#define MQTT_TOPIC_MOTOR_HUMIDITY "esp32/motor/humidity"
-#define MQTT_TOPIC_OTA_CMD "esp32/ota/command"
-#define MQTT_TOPIC_OTA_ACK "esp32/ota/ack"
-
-#define DEFAULT_MOTOR_DURATION 5000
-#define DEFAULT_MOTOR_TIMEPERIOD 2*60*1000
-
-
-#define SHARED_SUB_DATA_MUTEX_DELAY 300
-#define DATA_PUBLISH_MUTEX_DELAY 250
-#define OTA_SHARED_MUTEX_DELAY 250
-
+// Data Structs
 typedef struct {
     int8_t motor_command;
     uint32_t motor_timePeriod;
@@ -63,6 +46,29 @@ typedef struct {
     bool new_data_ready;  // Flag to indicate new data is available
 } sensor_data_t;
 
+// Publish Topics
+#define MQTT_TOPIC_PUB "esp32/pub"
+#define MQTT_TOPIC_PUB_ACK "esp32/motor/ack"
+
+// Subscription Topics
+#define MQTT_TOPIC_MOTOR_CMD "esp32/motor/command"
+#define MQTT_TOPIC_MOTOR_SCHEDULE "esp32/motor/schedule"
+#define MQTT_TOPIC_MOTOR_HUMIDITY "esp32/motor/humidity"
+#define MQTT_TOPIC_OTA_CMD "esp32/ota/command"
+#define MQTT_TOPIC_OTA_ACK "esp32/ota/ack"
+
+
+#define DEFAULT_MOTOR_DURATION 5000
+#define DEFAULT_MOTOR_TIMEPERIOD 2*60*1000
+
+
+// Mutex wait delays
+#define SHARED_SUB_DATA_MUTEX_DELAY 300
+#define DATA_PUBLISH_MUTEX_DELAY 250
+#define OTA_SHARED_MUTEX_DELAY 250
+
+
+
 extern sensor_data_t shared_data;
 extern shared_sub_data_t shared_sub_data;
 extern shared_ota_t shared_ota_data;
@@ -77,6 +83,7 @@ extern SemaphoreHandle_t ota_shared_mutex;
 extern const char* namespaces[NS_COUNT];
 extern const char* all_keys[NS_COUNT][MAX_KEYS_PER_NS];
 extern const int key_counts[NS_COUNT];
+
 
 
 // #### METHODS

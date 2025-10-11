@@ -1,7 +1,7 @@
 # 🌾 AgriFW — Smart Agriculture IoT Firmware for ESP32
 
 AgriFW is an embedded firmware for ESP32-based IoT systems, designed to monitor and control environmental parameters in hydroponic, aeroponic, and smart-farming setups.  
-It integrates sensor data acquisition, MQTT-based cloud communication, OTA firmware updates, and Wi-Fi management — all in a modular, scalable architecture built on ESP-IDF.
+It integrates sensor data acquisition, MQTT-based cloud communication, OTA firmware updates, and Wi-Fi management, all in a modular, scalable architecture built on ESP-IDF.
 
 ---
 
